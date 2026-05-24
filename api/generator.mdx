@@ -1,0 +1,362 @@
+---
+title: "Generator API: setup, seed, and biome query functions"
+description: "Complete reference for cubiomes generator.h — setupGenerator, applySeed, genBiomes, getBiomeAt, allocCache, and the Range and Generator structs."
+---
+
+The generator API is the primary interface for producing biome data in cubiomes. You initialize a `Generator` once for a given Minecraft version, apply a world seed and dimension, then call `genBiomes` or `getBiomeAt` to query biome IDs at any position or scale. The same `Generator` instance can be reused across seeds by calling `applySeed` again.
+
+## Structs
+
+### `Generator`
+
+Holds all state required to generate biomes for a given MC version, dimension, and seed.
+
+```c
+typedef struct Generator {
+    int      mc;      // Minecraft version (MCVersion enum)
+    int      dim;     // Active dimension
+    uint32_t flags;   // Generator flags (LARGE_BIOMES, etc.)
+    uint64_t seed;    // World seed
+    uint64_t sha;     // SHA of the seed (used internally)
+    // version-specific noise union ...
+    NetherNoise nn;   // MC 1.16 Nether noise
+    EndNoise    en;   // MC 1.9+ End noise
+} Generator;
+```
+
+| Field  | Type       | Description                                              |
+| ------ | ---------- | -------------------------------------------------------- |
+| `mc`   | `int`      | Minecraft version constant from `MCVersion`.             |
+| `dim`  | `int`      | Active dimension: `0` Overworld, `-1` Nether, `+1` End. |
+| `flags`| `uint32_t` | Bitmask of generator flags set during `setupGenerator`. |
+| `seed` | `uint64_t` | The world seed applied via `applySeed`.                  |
+| `sha`  | `uint64_t` | Internal SHA value derived from the seed.                |
+| `nn`   | `NetherNoise` | Nether biome noise (populated for MC 1.16+).          |
+| `en`   | `EndNoise`    | End biome noise (populated for MC 1.9+).              |
+
+### `Range`
+
+Describes a cuboidal region in scaled coordinates used by `genBiomes` and `allocCache`.
+
+```c
+typedef struct Range {
+    int scale; // coordinate scale: 1, 4, 16, 64, or 256
+    int x, z;  // origin in scaled coordinates
+    int sx, sz; // width and depth in scaled coordinates
+    int y;     // vertical origin (biome coordinate)
+    int sy;    // vertical extent (0 treated as 1 for 2D)
+} Range;
+```
+
+| Field   | Type  | Description                                                    |
+| ------- | ----- | -------------------------------------------------------------- |
+| `scale` | `int` | Block-to-coordinate ratio. Use `1` for block, `4` for biome.  |
+| `x`     | `int` | X origin in scaled coordinates.                               |
+| `z`     | `int` | Z origin in scaled coordinates.                               |
+| `sx`    | `int` | Extent along X axis.                                          |
+| `sz`    | `int` | Extent along Z axis.                                          |
+| `y`     | `int` | Y origin (biome coordinate; ignored pre-1.18 for 2D queries). |
+| `sy`    | `int` | Extent along Y axis; `0` is treated as `1`.                   |
+
+## Generator flags
+
+Pass these as a bitmask to the `flags` argument of `setupGenerator`.
+
+| Constant               | Value | Description                                                     |
+| ---------------------- | ----- | --------------------------------------------------------------- |
+| `LARGE_BIOMES`         | `0x1` | Enables the Large Biomes world type.                            |
+| `NO_BETA_OCEAN`        | `0x2` | Disables Beta ocean generation.                                 |
+| `FORCE_OCEAN_VARIANTS` | `0x4` | Forces ocean variants to appear at scales larger than normal.   |
+
+## Functions
+
+### `setupGenerator`
+
+```c
+void setupGenerator(Generator *g, int mc, uint32_t flags);
+```
+
+Initializes a `Generator` for the specified Minecraft version. Call this once before using any other generator functions. The generator can then be seeded with `applySeed`.
+
+<ParamField path="g" type="Generator *" required>
+  Pointer to the `Generator` struct to initialize.
+</ParamField>
+
+<ParamField path="mc" type="int" required>
+  Minecraft version constant, e.g. `MC_1_21` or `MC_1_18`. See the `MCVersion` enum in `biomes.h`.
+</ParamField>
+
+<ParamField path="flags" type="uint32_t">
+  Bitmask of generator flags: `LARGE_BIOMES`, `NO_BETA_OCEAN`, `FORCE_OCEAN_VARIANTS`, or `0` for defaults.
+</ParamField>
+
+---
+
+### `applySeed`
+
+```c
+void applySeed(Generator *g, int dim, uint64_t seed);
+```
+
+Applies a world seed and dimension to an already-initialized generator. You must call `setupGenerator` before `applySeed`. Calling `applySeed` again with a different seed reuses the same generator without re-initialization.
+
+<ParamField path="g" type="Generator *" required>
+  Pointer to an initialized `Generator`.
+</ParamField>
+
+<ParamField path="dim" type="int" required>
+  Target dimension. Use `0` for Overworld, `-1` for Nether, `+1` for End. These correspond to `DIM_OVERWORLD`, `DIM_NETHER`, and `DIM_END`.
+</ParamField>
+
+<ParamField path="seed" type="uint64_t" required>
+  64-bit world seed.
+</ParamField>
+
+---
+
+### `getBiomeAt`
+
+```c
+int getBiomeAt(const Generator *g, int scale, int x, int y, int z);
+```
+
+Returns the biome ID at a single position. Use scale `1` for block coordinates or `4` for biome coordinates. Returns `-1` (`none`) on failure.
+
+<ParamField path="g" type="const Generator *" required>
+  Pointer to a seeded generator.
+</ParamField>
+
+<ParamField path="scale" type="int" required>
+  Coordinate scale. Must be `1` (block) or `4` (biome column).
+</ParamField>
+
+<ParamField path="x" type="int" required>
+  X coordinate at the specified scale.
+</ParamField>
+
+<ParamField path="y" type="int" required>
+  Y coordinate (biome coordinate; relevant for 1.18+ 3D biomes).
+</ParamField>
+
+<ParamField path="z" type="int" required>
+  Z coordinate at the specified scale.
+</ParamField>
+
+---
+
+### `genBiomes`
+
+```c
+int genBiomes(const Generator *g, int *cache, Range r);
+```
+
+Fills `cache` with biome IDs for the entire `Range` cuboid. Access results as `cache[y*r.sx*r.sz + z*r.sx + x]` where `(x,y,z)` are relative coordinates within the range. Returns `0` on success.
+
+<ParamField path="g" type="const Generator *" required>
+  Pointer to a seeded generator.
+</ParamField>
+
+<ParamField path="cache" type="int *" required>
+  Output buffer of length at least `getMinCacheSize(g, r.scale, r.sx, r.sy, r.sz)`. Use `allocCache` to allocate it.
+</ParamField>
+
+<ParamField path="r" type="Range" required>
+  Scaled range describing the region to generate.
+</ParamField>
+
+---
+
+### `allocCache`
+
+```c
+int *allocCache(const Generator *g, Range r);
+```
+
+Allocates a heap buffer large enough to hold the biome output for the given range. The caller is responsible for freeing the returned pointer with `free()`.
+
+<ParamField path="g" type="const Generator *" required>
+  Pointer to an initialized generator (seed need not be applied yet).
+</ParamField>
+
+<ParamField path="r" type="Range" required>
+  Range whose dimensions determine the buffer size.
+</ParamField>
+
+---
+
+### `getMinCacheSize`
+
+```c
+size_t getMinCacheSize(const Generator *g, int scale, int sx, int sy, int sz);
+```
+
+Returns the minimum number of `int` elements required to generate a volume of `(sx, sy, sz)` at the given scale. Pass `sy = 0` to get the size for a 2D plane (equivalent to `sy = 1`).
+
+<ParamField path="g" type="const Generator *" required>
+  Initialized generator.
+</ParamField>
+
+<ParamField path="scale" type="int" required>
+  Coordinate scale of the planned generation.
+</ParamField>
+
+<ParamField path="sx" type="int" required>
+  Width of the volume.
+</ParamField>
+
+<ParamField path="sy" type="int" required>
+  Height of the volume. Pass `0` to compute the size for a 2D plane.
+</ParamField>
+
+<ParamField path="sz" type="int" required>
+  Depth of the volume.
+</ParamField>
+
+---
+
+### `getLayerForScale`
+
+```c
+const Layer *getLayerForScale(const Generator *g, int scale);
+```
+
+Returns a pointer to the internal layer that corresponds to the given scale. Supported scales are `0`, `1`, `4`, `16`, `64`, and `256`. A scale of `0` returns the custom entry layer `g->entry`. Only valid for Overworld generation in MC 1.17 and earlier.
+
+<ParamField path="g" type="const Generator *" required>
+  Initialized generator using a layered (pre-1.18) Overworld.
+</ParamField>
+
+<ParamField path="scale" type="int" required>
+  One of `{0, 1, 4, 16, 64, 256}`.
+</ParamField>
+
+---
+
+### `setupLayerStack`
+
+```c
+void setupLayerStack(LayerStack *g, int mc, int largeBiomes);
+```
+
+Initializes a standalone `LayerStack` for layered biome generation (Overworld, MC 1.0–1.17). Use the higher-level `setupGenerator` for new code.
+
+<ParamField path="g" type="LayerStack *" required>
+  Pointer to the `LayerStack` to initialize.
+</ParamField>
+
+<ParamField path="mc" type="int" required>
+  Minecraft version.
+</ParamField>
+
+<ParamField path="largeBiomes" type="int">
+  Pass non-zero to enable the Large Biomes world type.
+</ParamField>
+
+---
+
+### `genArea`
+
+```c
+int genArea(const Layer *layer, int *out, int areaX, int areaZ, int areaWidth, int areaHeight);
+```
+
+Generates a 2D biome area using a specific layer. Output is indexed as `out[x + z * areaWidth]`. Prefer `genBiomes` for new code.
+
+<ParamField path="layer" type="const Layer *" required>
+  Layer entry point (e.g. from `getLayerForScale`).
+</ParamField>
+
+<ParamField path="out" type="int *" required>
+  Output buffer of at least `areaWidth * areaHeight` elements.
+</ParamField>
+
+<ParamField path="areaX" type="int" required>
+  X coordinate of the area origin in layer-scaled coordinates.
+</ParamField>
+
+<ParamField path="areaZ" type="int" required>
+  Z coordinate of the area origin in layer-scaled coordinates.
+</ParamField>
+
+<ParamField path="areaWidth" type="int" required>
+  Width of the area.
+</ParamField>
+
+<ParamField path="areaHeight" type="int" required>
+  Height (Z extent) of the area.
+</ParamField>
+
+---
+
+### `mapApproxHeight`
+
+```c
+int mapApproxHeight(float *y, int *ids, const Generator *g,
+    const SurfaceNoise *sn, int x, int z, int w, int h);
+```
+
+Maps an approximation of the Overworld surface height at 1:4 horizontal scale. If `ids` is non-null it is filled with biome IDs for the area. Heights written to `y` are in blocks.
+
+<ParamField path="y" type="float *" required>
+  Output array of `w * h` height values in blocks.
+</ParamField>
+
+<ParamField path="ids" type="int *">
+  Optional output array of `w * h` biome IDs. Pass `NULL` to skip biome output.
+</ParamField>
+
+<ParamField path="g" type="const Generator *" required>
+  Seeded generator for the Overworld.
+</ParamField>
+
+<ParamField path="sn" type="const SurfaceNoise *" required>
+  Initialized surface noise for the same seed.
+</ParamField>
+
+<ParamField path="x" type="int" required>
+  X origin in 1:4 scaled coordinates.
+</ParamField>
+
+<ParamField path="z" type="int" required>
+  Z origin in 1:4 scaled coordinates.
+</ParamField>
+
+<ParamField path="w" type="int" required>
+  Width of the area.
+</ParamField>
+
+<ParamField path="h" type="int" required>
+  Depth of the area.
+</ParamField>
+
+## Usage example
+
+```c
+#include "generator.h"
+
+int main(void)
+{
+    Generator g;
+    setupGenerator(&g, MC_1_21, 0);
+    applySeed(&g, DIM_OVERWORLD, 12345ULL);
+
+    // Query a single biome at block position (0, 63, 0)
+    int biome = getBiomeAt(&g, 1, 0, 63, 0);
+
+    // Generate a 512x512 biome map at 1:4 scale centered on the origin
+    Range r;
+    r.scale = 4;
+    r.x = -64; r.z = -64;
+    r.sx = 128; r.sz = 128;
+    r.y = 15;  r.sy = 1;
+
+    int *cache = allocCache(&g, r);
+    genBiomes(&g, cache, r);
+
+    // Access biome at relative position (10, 0, 20)
+    int b = cache[0 * r.sx * r.sz + 20 * r.sx + 10];
+
+    free(cache);
+    return 0;
+}
+```

@@ -1,0 +1,647 @@
+---
+title: "Structure finders API reference"
+description: "Functions for locating structures, strongholds, spawn, and biomes, plus seed-filter helpers for fast world-seed enumeration in cubiomes."
+---
+
+The finders API locates Minecraft structures and world features from a world seed without simulating the full game. Structure positions depend only on the lower 48 bits of the world seed and the region coordinates, so most lookups are extremely fast. Biome checks are layered on top when you need to verify that conditions are met for a structure to actually spawn.
+
+## Key structs
+
+### `StructureConfig`
+
+Holds the positioning parameters for a structure type in a given Minecraft version.
+
+```c
+typedef struct StructureConfig {
+    int32_t salt;        // additive seed constant for this structure type
+    int8_t  regionSize;  // size of the placement grid in chunks
+    int8_t  chunkRange;  // range within a region for the generation attempt
+    uint8_t structType;  // StructureType enum value
+    int8_t  dim;         // dimension constant
+    float   rarity;      // spawn probability (not used by all types)
+} StructureConfig;
+```
+
+| Field        | Type       | Description                                                  |
+| ------------ | ---------- | ------------------------------------------------------------ |
+| `salt`       | `int32_t`  | Additive seed constant unique to this structure type.        |
+| `regionSize` | `int8_t`   | Side length of the placement grid in chunks.                 |
+| `chunkRange` | `int8_t`   | Maximum chunk offset within a region for the attempt.        |
+| `structType` | `uint8_t`  | `StructureType` enum value identifying the structure.        |
+| `dim`        | `int8_t`   | Dimension: `0` Overworld, `-1` Nether, `+1` End.            |
+| `rarity`     | `float`    | Generation probability (structure-specific; may be unused).  |
+
+---
+
+### `StrongholdIter`
+
+Iteration state for walking through stronghold positions in generation order.
+
+```c
+typedef struct StrongholdIter {
+    Pos      pos;        // accurate block position of current stronghold
+    Pos      nextapprox; // approximate position (+/-112 blocks) of next
+    int      index;      // stronghold index counter
+    int      ringnum;    // ring number
+    int      ringmax;    // max index within ring
+    int      ringidx;    // index within ring
+    double   angle;      // next angle within ring (radians)
+    double   dist;       // next distance from origin (in chunks)
+    uint64_t rnds;       // 48-bit random seed
+    int      mc;         // Minecraft version
+} StrongholdIter;
+```
+
+### `StructureType` enum
+
+| Constant          | Notes                                          |
+| ----------------- | ---------------------------------------------- |
+| `Feature`         | Temple generation attempts (pre-1.13).         |
+| `Desert_Pyramid`  |                                                |
+| `Jungle_Temple`   | Alias: `Jungle_Pyramid`                        |
+| `Swamp_Hut`       |                                                |
+| `Igloo`           |                                                |
+| `Village`         |                                                |
+| `Ocean_Ruin`      |                                                |
+| `Shipwreck`       |                                                |
+| `Monument`        |                                                |
+| `Mansion`         |                                                |
+| `Outpost`         |                                                |
+| `Ruined_Portal`   |                                                |
+| `Ruined_Portal_N` | Nether ruined portal.                          |
+| `Ancient_City`    |                                                |
+| `Treasure`        | Buried treasure.                               |
+| `Mineshaft`       |                                                |
+| `Desert_Well`     |                                                |
+| `Geode`           |                                                |
+| `Fortress`        |                                                |
+| `Bastion`         |                                                |
+| `End_City`        |                                                |
+| `End_Gateway`     |                                                |
+| `End_Island`      |                                                |
+| `Trail_Ruins`     |                                                |
+| `Trial_Chambers`  |                                                |
+
+## Finding structure positions
+
+### `getStructureConfig`
+
+```c
+int getStructureConfig(int structureType, int mc, StructureConfig *sconf);
+```
+
+Populates `sconf` with the positioning configuration for the given structure type and MC version. Returns non-zero on success; returns zero if the version does not support the structure type.
+
+<ParamField path="structureType" type="int" required>
+  A `StructureType` enum value.
+</ParamField>
+
+<ParamField path="mc" type="int" required>
+  Minecraft version constant.
+</ParamField>
+
+<ParamField path="sconf" type="StructureConfig *" required>
+  Output struct to populate.
+</ParamField>
+
+---
+
+### `getStructurePos`
+
+```c
+int getStructurePos(int structureType, int mc, uint64_t seed,
+    int regX, int regZ, Pos *pos);
+```
+
+Returns the block position of the generation attempt for the given structure type in region `(regX, regZ)`. Only the lower 48 bits of `seed` are used. Returns zero if the region produces no valid attempt for this type; returns non-zero otherwise. Use `isViableStructurePos` to confirm biome requirements are met.
+
+<ParamField path="structureType" type="int" required>
+  A `StructureType` enum value.
+</ParamField>
+
+<ParamField path="mc" type="int" required>
+  Minecraft version constant.
+</ParamField>
+
+<ParamField path="seed" type="uint64_t" required>
+  World seed (only the lower 48 bits are relevant).
+</ParamField>
+
+<ParamField path="regX" type="int" required>
+  Region X coordinate (region size depends on structure type).
+</ParamField>
+
+<ParamField path="regZ" type="int" required>
+  Region Z coordinate.
+</ParamField>
+
+<ParamField path="pos" type="Pos *" required>
+  Output block position.
+</ParamField>
+
+---
+
+### `getFeaturePos` (inline)
+
+```c
+Pos getFeaturePos(StructureConfig config, uint64_t seed, int regX, int regZ);
+```
+
+Returns the block position for a small feature (uniform distribution) given a pre-fetched `StructureConfig`.
+
+---
+
+### `getFeatureChunkInRegion` (inline)
+
+```c
+Pos getFeatureChunkInRegion(StructureConfig config, uint64_t seed, int regX, int regZ);
+```
+
+Returns the chunk-within-region offset for a small feature. Multiply the result by 16 and add the region origin to get block coordinates.
+
+---
+
+### `getLargeStructurePos` (inline)
+
+```c
+Pos getLargeStructurePos(StructureConfig config, uint64_t seed, int regX, int regZ);
+```
+
+Returns the block position for large structures (monuments, mansions) that use a triangular distribution.
+
+---
+
+### `getMineshafts`
+
+```c
+int getMineshafts(int mc, uint64_t seed, int chunkX, int chunkZ,
+    int chunkW, int chunkH, Pos *out, int nout);
+```
+
+Finds mineshaft generation attempts in a rectangular chunk area starting at `(chunkX, chunkZ)` with size `(chunkW, chunkH)`. Writes up to `nout` positions to `out`. Returns the total count of chunks with mineshafts in the area.
+
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="chunkX" type="int" required>X origin in chunk coordinates.</ParamField>
+<ParamField path="chunkZ" type="int" required>Z origin in chunk coordinates.</ParamField>
+<ParamField path="chunkW" type="int" required>Width of the search area in chunks.</ParamField>
+<ParamField path="chunkH" type="int" required>Height of the search area in chunks.</ParamField>
+<ParamField path="out" type="Pos *">Output buffer for positions. Pass `NULL` to count only.</ParamField>
+<ParamField path="nout" type="int">Maximum number of positions to write to `out`.</ParamField>
+
+---
+
+### `isSlimeChunk` (inline)
+
+```c
+int isSlimeChunk(uint64_t seed, int chunkX, int chunkZ);
+```
+
+Returns non-zero if slimes can spawn in the chunk at `(chunkX, chunkZ)` for the given world seed.
+
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="chunkX" type="int" required>Chunk X coordinate.</ParamField>
+<ParamField path="chunkZ" type="int" required>Chunk Z coordinate.</ParamField>
+
+## Strongholds and spawn
+
+### `initFirstStronghold`
+
+```c
+Pos initFirstStronghold(StrongholdIter *sh, int mc, uint64_t s48);
+```
+
+Determines the approximate position of the first stronghold (±112 blocks) from the lower 48 bits of the world seed without biome checks. If `sh` is non-null it is initialized for subsequent iteration with `nextStronghold`. Returns the approximate block position.
+
+<ParamField path="sh" type="StrongholdIter *">
+  Iterator to initialize. Pass `NULL` to get only the first position.
+</ParamField>
+
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="s48" type="uint64_t" required>Lower 48 bits of the world seed.</ParamField>
+
+---
+
+### `nextStronghold`
+
+```c
+int nextStronghold(StrongholdIter *sh, const Generator *g);
+```
+
+Performs biome checks on the iterator's current position and advances it to the next stronghold. Pass `NULL` for `g` on MC 1.19.3+ to iterate approximate positions without biome checks. Returns the number of further strongholds after this one.
+
+<ParamField path="sh" type="StrongholdIter *" required>
+  Iterator initialized by `initFirstStronghold`.
+</ParamField>
+
+<ParamField path="g" type="const Generator *">
+  Overworld generator with the world seed applied. Pass `NULL` for approximate-only iteration on 1.19.3+.
+</ParamField>
+
+---
+
+### `getSpawn`
+
+```c
+Pos getSpawn(const Generator *g);
+```
+
+Returns the world spawn position. This function is slow and may be inaccurate because spawn depends on the presence of grass blocks.
+
+<ParamField path="g" type="const Generator *" required>Seeded Overworld generator.</ParamField>
+
+---
+
+### `estimateSpawn`
+
+```c
+Pos estimateSpawn(const Generator *g, uint64_t *rng);
+```
+
+Returns a fast approximate spawn position. The optional `rng` output captures the random state after the search.
+
+<ParamField path="g" type="const Generator *" required>Seeded Overworld generator.</ParamField>
+<ParamField path="rng" type="uint64_t *">Optional output for the RNG state. Pass `NULL` to ignore.</ParamField>
+
+---
+
+### `locateBiome`
+
+```c
+Pos locateBiome(
+    const Generator *g, int x, int y, int z, int radius,
+    uint64_t validB, uint64_t validM, uint64_t *rng, int *passes);
+```
+
+Finds a suitable pseudo-random position within a square area centered on `(x, y, z)`. This is the algorithm used internally for spawn and stronghold placement. It is accurate but slow.
+
+<ParamField path="g" type="const Generator *" required>Overworld generator.</ParamField>
+<ParamField path="x" type="int" required>Search origin X (block coordinate).</ParamField>
+<ParamField path="y" type="int" required>Search origin Y (block coordinate).</ParamField>
+<ParamField path="z" type="int" required>Search origin Z (block coordinate).</ParamField>
+<ParamField path="radius" type="int" required>Half-side of the search square in blocks.</ParamField>
+<ParamField path="validB" type="uint64_t" required>Bitset of valid biome IDs 0–63.</ParamField>
+<ParamField path="validM" type="uint64_t" required>Bitset of valid biome IDs 192–255.</ParamField>
+<ParamField path="rng" type="uint64_t *">Output RNG state. Initialize with `setSeed(rng, world_seed)` before calling. Pass `NULL` to ignore.</ParamField>
+<ParamField path="passes" type="int *">Output count of valid positions sampled. Pass `NULL` to ignore.</ParamField>
+
+---
+
+### `getShadow` (inline)
+
+```c
+uint64_t getShadow(uint64_t seed);
+```
+
+Returns the shadow seed: a world seed that produces the same structure positions as `seed` but with inverted biome distribution.
+
+<ParamField path="seed" type="uint64_t" required>Original world seed.</ParamField>
+
+## Validating structure positions
+
+### `isViableStructurePos`
+
+```c
+int isViableStructurePos(int structType, Generator *g, int blockX, int blockZ, uint32_t flags);
+```
+
+Performs a biome check near `(blockX, blockZ)` to determine whether a structure of `structType` can spawn there. The generator is temporarily modified during the call and restored on return. Returns non-zero if the position is viable.
+
+<ParamField path="structType" type="int" required>A `StructureType` enum value.</ParamField>
+<ParamField path="g" type="Generator *" required>Generator initialized for the correct version, dimension, and seed.</ParamField>
+<ParamField path="blockX" type="int" required>Block X coordinate (from `getStructurePos`).</ParamField>
+<ParamField path="blockZ" type="int" required>Block Z coordinate.</ParamField>
+<ParamField path="flags" type="uint32_t">Optional structure-specific flags (e.g. biome variant for villages). Pass `0` for defaults.</ParamField>
+
+---
+
+### `isViableFeatureBiome`
+
+```c
+int isViableFeatureBiome(int mc, int structureType, int biomeID);
+```
+
+Returns non-zero if the biome `biomeID` can generate the specified structure type in the given version.
+
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="structureType" type="int" required>A `StructureType` enum value.</ParamField>
+<ParamField path="biomeID" type="int" required>Biome ID to test.</ParamField>
+
+---
+
+### `isViableStructureTerrain`
+
+```c
+int isViableStructureTerrain(int structType, Generator *g, int blockX, int blockZ);
+```
+
+Rules out structure positions in 1.18 where the surface height at the bounding box corners is too low. Primarily affects `Desert_Pyramid`, `Jungle_Temple`, and `Mansion`. Returns non-zero if the terrain could support the structure.
+
+<ParamField path="structType" type="int" required>Structure type to check.</ParamField>
+<ParamField path="g" type="Generator *" required>1.18 Overworld generator with seed applied.</ParamField>
+<ParamField path="blockX" type="int" required>Block X coordinate.</ParamField>
+<ParamField path="blockZ" type="int" required>Block Z coordinate.</ParamField>
+
+## Structure properties
+
+### `getVariant`
+
+```c
+int getVariant(StructureVariant *sv, int structType, int mc, uint64_t seed,
+    int blockX, int blockZ, int biomeID);
+```
+
+Retrieves structural properties such as rotation, bounding box, and variant flags for a structure instance. Only some structure types are supported.
+
+<ParamField path="sv" type="StructureVariant *" required>Output variant data.</ParamField>
+<ParamField path="structType" type="int" required>Structure type.</ParamField>
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="blockX" type="int" required>Block X coordinate of the structure.</ParamField>
+<ParamField path="blockZ" type="int" required>Block Z coordinate of the structure.</ParamField>
+<ParamField path="biomeID" type="int" required>Biome at the structure position.</ParamField>
+
+---
+
+### `getEndCityPieces`
+
+```c
+int getEndCityPieces(Piece *pieces, uint64_t seed, int chunkX, int chunkZ);
+```
+
+Generates the structural pieces of an End City. The `pieces` buffer must hold at least `END_CITY_PIECES_MAX` (421) elements. Returns the number of pieces generated.
+
+<ParamField path="pieces" type="Piece *" required>Output buffer of at least `END_CITY_PIECES_MAX` elements.</ParamField>
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="chunkX" type="int" required>Chunk X coordinate of the End City.</ParamField>
+<ParamField path="chunkZ" type="int" required>Chunk Z coordinate of the End City.</ParamField>
+
+---
+
+### `getFortressPieces`
+
+```c
+int getFortressPieces(Piece *list, int n, int mc, uint64_t seed, int chunkX, int chunkZ);
+```
+
+Generates up to `n` structural pieces of a Nether Fortress. A buffer of ~400 is sufficient in practice. Returns the number of pieces generated.
+
+<ParamField path="list" type="Piece *" required>Output buffer.</ParamField>
+<ParamField path="n" type="int" required>Maximum number of pieces to generate.</ParamField>
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="chunkX" type="int" required>Chunk X coordinate of the Fortress origin.</ParamField>
+<ParamField path="chunkZ" type="int" required>Chunk Z coordinate.</ParamField>
+
+---
+
+### `getFixedEndGateways`
+
+```c
+void getFixedEndGateways(int mc, uint64_t seed, Pos src[20]);
+```
+
+Writes the 20 fixed inner gateway positions (in generation order) to `src`. These are the gateways that appear each time the Ender Dragon is defeated.
+
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="src" type="Pos[20]" required>Output array of 20 positions.</ParamField>
+
+---
+
+### `getHouseList`
+
+```c
+uint64_t getHouseList(int *houses, uint64_t seed, int chunkX, int chunkZ);
+```
+
+Determines the number of each house type generated in a village (MC < 1.14). Pass an array of length `HOUSE_NUM` (9) for `houses`. Returns the random seed state after the computation.
+
+<ParamField path="houses" type="int *" required>Output array of length `HOUSE_NUM` (9) indexed by house-type enum.</ParamField>
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="chunkX" type="int" required>Chunk X coordinate of the village origin.</ParamField>
+<ParamField path="chunkZ" type="int" required>Chunk Z coordinate.</ParamField>
+
+## Seed filters
+
+### `setupBiomeFilter`
+
+```c
+void setupBiomeFilter(
+    BiomeFilter *bf,
+    int mc, uint32_t flags,
+    const int *required, int requiredLen,
+    const int *excluded, int excludedLen,
+    const int *matchany, int matchanyLen);
+```
+
+Builds a `BiomeFilter` from lists of required, excluded, and match-any biome IDs. Biomes must not appear in more than one list. Pass `NULL` and `0` for unused lists.
+
+<ParamField path="bf" type="BiomeFilter *" required>Output filter to populate.</ParamField>
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="flags" type="uint32_t">Generator flags (e.g. `BF_APPROX` for aggressive pre-filtering).</ParamField>
+<ParamField path="required" type="const int *">Array of biome IDs that must all be present. Pass `NULL` if none.</ParamField>
+<ParamField path="requiredLen" type="int">Length of `required`.</ParamField>
+<ParamField path="excluded" type="const int *">Array of biome IDs that must not be present. Pass `NULL` if none.</ParamField>
+<ParamField path="excludedLen" type="int">Length of `excluded`.</ParamField>
+<ParamField path="matchany" type="const int *">Array of biome IDs where at least one must be present. Pass `NULL` if none.</ParamField>
+<ParamField path="matchanyLen" type="int">Length of `matchany`.</ParamField>
+
+---
+
+### `checkForBiomes`
+
+```c
+int checkForBiomes(
+    Generator         *g,
+    int               *cache,
+    Range              r,
+    int                dim,
+    uint64_t           seed,
+    const BiomeFilter *filter,
+    volatile char     *stop);
+```
+
+Generates the range `r` and checks whether it satisfies `filter`. Returns `0` if the filter fails, `1` if generation completed and passed, or `2` if it passed with incomplete generation. The generator is left in a partially initialized state after the call; re-apply a seed before further use.
+
+<ParamField path="g" type="Generator *" required>Generator set up for the correct version (seed applied internally).</ParamField>
+<ParamField path="cache" type="int *">Working buffer and biome output. Pass `NULL` to skip output.</ParamField>
+<ParamField path="r" type="Range" required>Range to check.</ParamField>
+<ParamField path="dim" type="int" required>Dimension: `0` Overworld, `-1` Nether, `+1` End.</ParamField>
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="filter" type="const BiomeFilter *" required>Filter produced by `setupBiomeFilter`.</ParamField>
+<ParamField path="stop" type="volatile char *">Abort flag. Set to non-zero from another thread to interrupt. Pass `NULL` if unused.</ParamField>
+
+---
+
+### `checkForBiomesAtLayer`
+
+```c
+int checkForBiomesAtLayer(
+    LayerStack        *ls,
+    Layer             *entry,
+    int               *cache,
+    uint64_t           seed,
+    int                x,
+    int                z,
+    unsigned int       w,
+    unsigned int       h,
+    const BiomeFilter *filter);
+```
+
+Specialization of `checkForBiomes` for a `LayerStack` (Overworld, MC ≤ 1.17). The layer stack is modified in place.
+
+<ParamField path="ls" type="LayerStack *" required>Layered generator (will be modified).</ParamField>
+<ParamField path="entry" type="Layer *" required>Generation entry point.</ParamField>
+<ParamField path="cache" type="int *">Output buffer or `NULL`.</ParamField>
+<ParamField path="seed" type="uint64_t" required>World seed.</ParamField>
+<ParamField path="x" type="int" required>X origin of the area.</ParamField>
+<ParamField path="z" type="int" required>Z origin of the area.</ParamField>
+<ParamField path="w" type="unsigned int" required>Width.</ParamField>
+<ParamField path="h" type="unsigned int" required>Height.</ParamField>
+<ParamField path="filter" type="const BiomeFilter *" required>Biome filter.</ParamField>
+
+---
+
+### `monteCarloBiomes`
+
+```c
+int monteCarloBiomes(
+    Generator         *g,
+    Range              r,
+    uint64_t          *rng,
+    double             coverage,
+    double             confidence,
+    int (*eval)(Generator *g, int scale, int x, int y, int z, void *data),
+    void              *data);
+```
+
+Samples biomes at random positions within `r` and checks that at least `coverage` fraction of them satisfy `eval`. Uses a statistical confidence level to bound the number of samples. Returns non-zero if the coverage threshold is met.
+
+<ParamField path="g" type="Generator *" required>Seeded biome generator.</ParamField>
+<ParamField path="r" type="Range" required>Region to sample.</ParamField>
+<ParamField path="rng" type="uint64_t *" required>Random seed for sampling positions.</ParamField>
+<ParamField path="coverage" type="double" required>Minimum fraction of successful evaluations, in [0, 1].</ParamField>
+<ParamField path="confidence" type="double" required>Statistical confidence level, e.g. `0.95` for 95%.</ParamField>
+<ParamField path="eval" type="function pointer" required>Evaluation callback: returns `1` for success, `0` for failure, `-1` to skip, or any other value to abort.</ParamField>
+<ParamField path="data" type="void *">User data passed to `eval`.</ParamField>
+
+---
+
+### `getBiomeCenters`
+
+```c
+int getBiomeCenters(
+    Pos           *pos,
+    int           *siz,
+    int            nmax,
+    Generator     *g,
+    Range          r,
+    int            match,
+    int            minsiz,
+    int            tol,
+    volatile char *stop);
+```
+
+Finds center positions of biome regions matching `match` within the area `r` (requires `scale = 4`, `sy = 1`). Returns the number of entries written.
+
+<ParamField path="pos" type="Pos *" required>Output array of up to `nmax` center positions.</ParamField>
+<ParamField path="siz" type="int *">Output array of biome region sizes. Pass `NULL` to ignore.</ParamField>
+<ParamField path="nmax" type="int" required>Maximum number of output entries.</ParamField>
+<ParamField path="g" type="Generator *" required>Initialized Overworld generator.</ParamField>
+<ParamField path="r" type="Range" required>Area to examine (`scale = 4`, `sy = 1`).</ParamField>
+<ParamField path="match" type="int" required>Biome ID to search for.</ParamField>
+<ParamField path="minsiz" type="int" required>Minimum biome region size to report.</ParamField>
+<ParamField path="tol" type="int" required>Border tolerance in scaled units.</ParamField>
+<ParamField path="stop" type="volatile char *">Abort flag. Pass `NULL` if unused.</ParamField>
+
+## Biome noise finders (1.18+)
+
+### `getParaRange`
+
+```c
+int getParaRange(const DoublePerlinNoise *para, double *pmin, double *pmax,
+    int x, int z, int w, int h, void *data, int (*func)(void*,int,int,double));
+```
+
+Determines the value range of a climate noise parameter over the area `(x, z, w, h)` at 1:4 scale. Results are written to `pmin` and `pmax` (nullable). Returns non-zero on error.
+
+<ParamField path="para" type="const DoublePerlinNoise *" required>Climate noise parameter to evaluate.</ParamField>
+<ParamField path="pmin" type="double *">Output minimum. Pass `NULL` to skip.</ParamField>
+<ParamField path="pmax" type="double *">Output maximum. Pass `NULL` to skip.</ParamField>
+<ParamField path="x" type="int" required>X origin.</ParamField>
+<ParamField path="z" type="int" required>Z origin.</ParamField>
+<ParamField path="w" type="int" required>Width.</ParamField>
+<ParamField path="h" type="int" required>Height.</ParamField>
+<ParamField path="data" type="void *">User data for the optional callback.</ParamField>
+<ParamField path="func" type="function pointer">Optional callback called at each iteration. Return non-zero to abort.</ParamField>
+
+---
+
+### `getBiomeParaExtremes`
+
+```c
+const int *getBiomeParaExtremes(int mc);
+```
+
+Returns a pointer to an array of min/max parameter values that bound biome transitions for the given version.
+
+<ParamField path="mc" type="int" required>Minecraft version (1.18+).</ParamField>
+
+---
+
+### `getBiomeParaLimits`
+
+```c
+const int *getBiomeParaLimits(int mc, int id);
+```
+
+Returns min/max noise parameter pairs (temperature, humidity, continentalness, erosion, depth, weirdness) at which biome `id` can generate, as 12 consecutive integers.
+
+<ParamField path="mc" type="int" required>Minecraft version (1.18+).</ParamField>
+<ParamField path="id" type="int" required>Biome ID.</ParamField>
+
+---
+
+### `getPossibleBiomesForLimits`
+
+```c
+void getPossibleBiomesForLimits(char ids[256], int mc, int limits[6][2]);
+```
+
+Marks non-zero in `ids` for every biome that can generate within the given set of climate parameter limits.
+
+<ParamField path="ids" type="char[256]" required>Output array indexed by biome ID. Non-zero means the biome is possible.</ParamField>
+<ParamField path="mc" type="int" required>Minecraft version (1.18+).</ParamField>
+<ParamField path="limits" type="int[6][2]" required>Min/max pairs for temperature, humidity, continentalness, erosion, depth, and weirdness.</ParamField>
+
+---
+
+### `canBiomeGenerate`
+
+```c
+int canBiomeGenerate(int layerId, int mc, uint32_t flags, int biomeID);
+```
+
+Returns non-zero if `biomeID` may generate at the given layer entry point.
+
+<ParamField path="layerId" type="int" required>Layer ID (e.g. `L_BIOME_256`, `L_VORONOI_1`).</ParamField>
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="flags" type="uint32_t">Generator flags.</ParamField>
+<ParamField path="biomeID" type="int" required>Biome ID to test.</ParamField>
+
+---
+
+### `getAvailableBiomes`
+
+```c
+void getAvailableBiomes(uint64_t *mL, uint64_t *mM, int layerId, int mc, uint32_t flags);
+```
+
+Fills the bitfields `mL` (IDs 0–63) and `mM` (IDs 128–191) with all biomes that can generate in the given version and layer.
+
+<ParamField path="mL" type="uint64_t *" required>Output bitfield for biome IDs 0–63.</ParamField>
+<ParamField path="mM" type="uint64_t *" required>Output bitfield for biome IDs 128–191.</ParamField>
+<ParamField path="layerId" type="int" required>Layer ID. Also supports `L_OCEAN_TEMP_256` and 1.18+ (where `layerId` is ignored).</ParamField>
+<ParamField path="mc" type="int" required>Minecraft version.</ParamField>
+<ParamField path="flags" type="uint32_t">Generator flags.</ParamField>

@@ -1,0 +1,225 @@
+---
+title: "Random number generation: LCG and Xoroshiro 128"
+description: "Learn how cubiomes implements Java's LCG-based Random, the Xoroshiro 128 algorithm used in 1.18+, and the MC seed pipeline for layer and chunk generation."
+---
+
+Every number cubiomes generates — from continent shapes to structure positions — originates from one of two random number generators. Versions up to MC 1.17 use a C implementation of Java's `java.util.Random`, a 48-bit linear congruential generator (LCG). Starting with MC 1.18, Minecraft switched to a Xoroshiro 128 algorithm for noise generation. Both implementations live in `rng.h` as inline functions, so there is no separate compilation unit to link.
+
+<Warning>
+You must compile your project with `-fwrapv` (GCC/Clang) to get correct two's-complement wrapping for signed integer arithmetic. Without it, the `nextInt` and seed-stepping computations produce undefined behavior in C and may give wrong results on optimizing compilers.
+</Warning>
+
+## Java Random (LCG)
+
+Java's `Random` uses the recurrence `seed = (seed * 0x5deece66d + 0xb) & ((1 << 48) - 1)`. cubiomes exposes this as a set of inline functions operating on a `uint64_t` seed variable passed by pointer.
+
+### Initialization
+
+```c
+// rng.h (excerpt)
+static inline void setSeed(uint64_t *seed, uint64_t value)
+{
+    *seed = (value ^ 0x5deece66d) & ((1ULL << 48) - 1);
+}
+```
+
+`setSeed` transforms the input value with the standard Java XOR initializer and masks it to 48 bits. All subsequent calls read and write through the same pointer.
+
+### Generating values
+
+```c
+// rng.h (excerpt)
+static inline int next(uint64_t *seed, const int bits);
+static inline int nextInt(uint64_t *seed, const int n);
+static inline uint64_t nextLong(uint64_t *seed);
+static inline float nextFloat(uint64_t *seed);
+static inline double nextDouble(uint64_t *seed);
+```
+
+| Function | Return type | Description |
+|---|---|---|
+| `next(seed, bits)` | `int` | Advances the seed and returns the top `bits` bits (1–32) |
+| `nextInt(seed, n)` | `int` | Returns a uniform integer in `[0, n)` using Java's rejection-sampling algorithm |
+| `nextLong(seed)` | `uint64_t` | Calls `next(32)` twice and combines the results |
+| `nextFloat(seed)` | `float` | Returns a value in `[0.0, 1.0)` using 24 bits of randomness |
+| `nextDouble(seed)` | `double` | Returns a value in `[0.0, 1.0)` using 53 bits of randomness |
+
+```c
+uint64_t seed;
+setSeed(&seed, 12345ULL);
+
+int  roll   = nextInt(&seed, 20);   // [0, 20)
+long lval   = nextLong(&seed);
+float fval  = nextFloat(&seed);
+double dval = nextDouble(&seed);
+```
+
+### Skipping ahead with skipNextN
+
+You do not have to advance the seed one step at a time. `skipNextN` jumps forward by an arbitrary number of `next()` calls in O(log n) time using the fast-forward formula for LCGs:
+
+```c
+// rng.h (excerpt)
+static inline void skipNextN(uint64_t *seed, uint64_t n)
+{
+    uint64_t m = 1, a = 0;
+    uint64_t im = 0x5deece66dULL;
+    uint64_t ia = 0xb;
+    // ...fast-forward loop...
+    *seed = *seed * m + a;
+    *seed &= 0xffffffffffffULL;
+}
+```
+
+This is useful when you know a fixed number of values will be consumed by an unrelated system and you want to reach the state at a known offset without simulating every step.
+
+## Xoroshiro 128
+
+Minecraft 1.18 upgraded its world generation RNG to Xoroshiro 128+. cubiomes implements it in the `Xoroshiro` struct with a 128-bit state split into `lo` and `hi`.
+
+```c
+// rng.h (excerpt)
+STRUCT(Xoroshiro)
+{
+    uint64_t lo, hi;
+};
+```
+
+### Initialization
+
+```c
+// rng.h (excerpt)
+static inline void xSetSeed(Xoroshiro *xr, uint64_t value)
+{
+    const uint64_t XL = 0x9e3779b97f4a7c15ULL;
+    const uint64_t XH = 0x6a09e667f3bcc909ULL;
+    const uint64_t A  = 0xbf58476d1ce4e5b9ULL;
+    const uint64_t B  = 0x94d049bb133111ebULL;
+    // ... mixes value into lo and hi ...
+    xr->lo = l;
+    xr->hi = h;
+}
+```
+
+### Generating values
+
+```c
+// rng.h (excerpt)
+static inline uint64_t xNextLong(Xoroshiro *xr);
+static inline int      xNextInt(Xoroshiro *xr, uint32_t n);
+static inline double   xNextDouble(Xoroshiro *xr);
+static inline float    xNextFloat(Xoroshiro *xr);
+```
+
+| Function | Return type | Description |
+|---|---|---|
+| `xNextLong(xr)` | `uint64_t` | Core output; advances the 128-bit state and returns a 64-bit value |
+| `xNextInt(xr, n)` | `int` | Returns a uniform integer in `[0, n)` |
+| `xNextDouble(xr)` | `double` | Returns a value in `[0.0, 1.0)` using the top 53 bits of `xNextLong` |
+| `xNextFloat(xr)` | `float` | Returns a value in `[0.0, 1.0)` using the top 24 bits of `xNextLong` |
+
+```c
+Xoroshiro xr;
+xSetSeed(&xr, worldSeed);
+
+uint64_t l = xNextLong(&xr);
+double   d = xNextDouble(&xr);
+int      i = xNextInt(&xr, 100);  // [0, 100)
+```
+
+`xNextLongJ` and `xNextIntJ` provide Java-compatible variants that replicate Minecraft's specific way of combining two 32-bit halves when the full 64-bit output must match Java semantics exactly.
+
+## MC seed helpers
+
+The layer seed pipeline translates a world seed into per-chunk random states. It is used by the layer stack (MC ≤ 1.17) and structure generation.
+
+### The seed pipeline
+
+```
+getLayerSalt(n)                    → layerSalt  (ls)
+getStartSalt(worldSeed, ls)        → startSalt  (st)
+getStartSeed(worldSeed, ls)        → startSeed  (ss)
+getChunkSeed(ss, x, z)             → chunkSeed  (cs)
+mcFirstInt(cs, mod)                → first random integer
+mcStepSeed(cs, st)                 → next chunkSeed
+```
+
+Each layer has a unique integer salt that distinguishes its random stream from every other layer. Applying the salt to the world seed yields a start seed and start salt that are then combined with chunk coordinates to produce a per-chunk seed.
+
+### Function signatures
+
+```c
+// rng.h (excerpt)
+static inline uint64_t mcStepSeed(uint64_t s, uint64_t salt);
+static inline int      mcFirstInt(uint64_t s, int mod);
+static inline int      mcFirstIsZero(uint64_t s, int mod);
+static inline uint64_t getChunkSeed(uint64_t ss, int x, int z);
+static inline uint64_t getLayerSalt(uint64_t salt);
+static inline uint64_t getStartSalt(uint64_t ws, uint64_t ls);
+static inline uint64_t getStartSeed(uint64_t ws, uint64_t ls);
+```
+
+| Function | Description |
+|---|---|
+| `mcStepSeed(s, salt)` | Single LCG step mixing in a salt value |
+| `mcFirstInt(cs, mod)` | Extracts the first random integer from a chunk seed |
+| `mcFirstIsZero(cs, mod)` | Returns `1` if `mcFirstInt(cs, mod) == 0` (avoids a branch) |
+| `getChunkSeed(ss, x, z)` | Derives a chunk seed from a start seed and block/chunk coordinates |
+| `getLayerSalt(n)` | Converts a layer's base salt integer into its processed layer salt |
+| `getStartSalt(ws, ls)` | Derives the start salt from a world seed and layer salt |
+| `getStartSeed(ws, ls)` | Derives the start seed; used as input to `getChunkSeed` |
+
+### Practical example: isSlimeChunk
+
+Slime chunk detection is a direct application of the Java LCG. Minecraft mixes the world seed with the chunk coordinates using a series of arithmetic operations, then checks whether the first random integer modulo 10 equals zero. This function is defined in `finders.h`:
+
+```c
+// finders.h (excerpt)
+static inline int isSlimeChunk(uint64_t seed, int chunkX, int chunkZ)
+{
+    uint64_t rnd = seed;
+    rnd += (int)(chunkX * 0x5ac0db);
+    rnd += (int)(chunkX * chunkX * 0x4c1906);
+    rnd += (int)(chunkZ * 0x5f24f);
+    rnd += (int)(chunkZ * chunkZ) * 0x4307a7ULL;
+    rnd ^= 0x3ad8025fULL;
+    setSeed(&rnd, rnd);
+    return nextInt(&rnd, 10) == 0;
+}
+```
+
+<Steps>
+  <Step title="Mix coordinates into the seed">
+    The world seed is combined with `chunkX` and `chunkZ` using fixed multipliers that match Minecraft's slime chunk formula.
+  </Step>
+  <Step title="XOR with the slime constant">
+    The accumulated value is XORed with `0x3ad8025f` — Minecraft's hard-coded slime salt.
+  </Step>
+  <Step title="Initialize the LCG and draw one integer">
+    `setSeed` reinitializes the Java LCG from the mixed value. A chunk contains slimes if `nextInt(&rnd, 10) == 0` (a 1-in-10 chance).
+  </Step>
+</Steps>
+
+<AccordionGroup>
+  <Accordion title="Why is -fwrapv required?">
+    The LCG multiplier `0x5deece66d` and the `nextInt` rejection-sampling code rely on signed 32-bit integer overflow wrapping to match Java's behavior. C does not guarantee this by default — signed overflow is undefined behavior. The `-fwrapv` flag tells GCC and Clang to use two's-complement wrapping, making the C code numerically identical to Java.
+  </Accordion>
+  <Accordion title="What is the difference between xNextLong and xNextLongJ?">
+    `xNextLong` returns the raw 64-bit output of the Xoroshiro state. `xNextLongJ` calls `xNextLong` twice and combines the top 32 bits of each call, replicating the way Java's `Random.nextLong()` combines two 32-bit halves. Use `xNextLongJ` when you need results that match Java's exact integer sequence.
+  </Accordion>
+  <Accordion title="Can I use Xoroshiro functions for MC 1.17 and earlier?">
+    Technically the functions are available regardless of version, but Minecraft did not use Xoroshiro before 1.18. Using them for older versions will not reproduce correct game behavior. Use the Java LCG functions (`setSeed`, `nextInt`, etc.) for any version up to 1.17.
+  </Accordion>
+  <Accordion title="What units are used for chunk coordinates in getChunkSeed?">
+    `getChunkSeed` expects chunk coordinates, not block coordinates. Divide block coordinates by 16 (rounding toward negative infinity) to obtain chunk coordinates: `chunkX = blockX >> 4`.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Noise and layer systems" icon="wave-square" href="/concepts/noise-layers">
+    See how PerlinNoise and OctaveNoise consume the RNG output.
+  </Card>
+  <Card title="Biome generation" icon="map" href="/concepts/biome-generation">
+    Understand the full generation pipeline from seed to biome ID.
+  </Card>
+</CardGroup>

@@ -1,0 +1,54 @@
+---
+title: "Introduction to cubiomes, the Minecraft biome library"
+description: "cubiomes is a standalone C library that mimics Minecraft Java Edition biome and structure generation — covering every version from Beta 1.7 through 1.21."
+---
+
+cubiomes is a standalone C library that mimics the biome and feature generation of Minecraft Java Edition. It is designed as a fast, low-memory tool for building custom seed-finding applications and large-scale map viewers. If you need to programmatically search millions of seeds for specific biomes or structures, cubiomes gives you the generation logic without requiring a running Minecraft instance.
+
+## Who is it for?
+
+cubiomes targets C developers who want precise control over Minecraft world generation. A basic understanding of C and some familiarity with how Minecraft generates its world will help you get the most out of the library. If you want to explore seeds without writing code, the [cubiomes-viewer](https://github.com/Cubitect/cubiomes-viewer) graphical application is built on this library.
+
+## Key capabilities
+
+cubiomes covers the full scope of Minecraft Java Edition world generation across every major release:
+
+- **Biome generation** for all three dimensions — Overworld, Nether, and End
+- **Structure finding** for structures such as Outposts, Swamp Huts, Strongholds, and more
+- **Multi-threaded seed search** for exhaustive searches across the 2^48 or 2^64 seed space
+- **Version support** from Beta 1.7 through Minecraft 1.21
+
+## Generation models
+
+cubiomes implements two distinct generation models that reflect how Minecraft itself changed over time:
+
+**Layered generation (MC 1.0 – 1.17)** stacks discrete transformation layers, each operating at a different scale. These layers are highly cacheable, so generating large areas at coarse scales (1:16, 1:64, 1:256) is significantly faster than point-by-point queries.
+
+**Noise-based generation (MC 1.18+)** uses multi-dimensional noise functions to determine climate parameters (temperature, humidity, continentalness, erosion, weirdness, depth), which are then mapped to biomes. This model produces the 3D biome volumes introduced in the Caves & Cliffs update.
+
+The `Generator` struct, configured with `setupGenerator()`, handles both models — you select the model by passing the appropriate `MCVersion` constant (for example, `MC_1_18` or `MC_1_17`).
+
+## Version coverage
+
+The `MCVersion` enum in `biomes.h` defines a constant for every supported release:
+
+| Range | Generation model |
+|---|---|
+| `MC_B1_7` | Beta noise (Alpha/Beta era) |
+| `MC_1_0` – `MC_1_17` | Layered generation |
+| `MC_1_18` – `MC_1_21` | Noise-based generation |
+
+<Note>
+Development effort focuses on the newest patch of each major release. Minor releases and versions prior to 1.0 are considered experimental.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Install cubiomes" icon="download" href="/installation">
+    Clone the repository and build a static or shared library with make or CMake.
+  </Card>
+  <Card title="Get started with cubiomes" icon="rocket" href="/quickstart">
+    Working C programs that find biomes, generate areas, and locate structures.
+  </Card>
+</CardGroup>

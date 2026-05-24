@@ -1,0 +1,202 @@
+---
+title: 'Generate biomes for an area or region'
+description: 'Use genBiomes with a Range struct to generate biome data for entire areas or volumes at once, far faster than per-cell getBiomeAt calls.'
+---
+
+When you need biome data for a rectangular area — to render a map, scan a region for structures, or filter seeds — `genBiomes` is far more efficient than calling `getBiomeAt` for each position individually. For the layered generators used in versions up to 1.17 the speedup can be dramatic, because the layer stack can propagate intermediate results across the whole area instead of recomputing them per point. Even for the 1.18+ noise-based generator, a single `genBiomes` call avoids repeated function-call overhead and lets the compiler optimise the inner loop.
+
+## The `Range` struct
+
+Before calling `genBiomes` you must describe the volume you want to generate using a `Range`:
+
+```c
+Range r;
+// 1:16, a.k.a. horizontal chunk scaling
+r.scale = 16;
+// Define the position and size for a horizontal area:
+r.x = -60, r.z = -60;   // position (x,z)
+r.sx = 120, r.sz = 120; // size (width,height)
+// Set the vertical range as a plane near sea level at scale 1:4.
+r.y = 15, r.sy = 1;
+```
+
+| Field | Description |
+|-------|-------------|
+| `scale` | Horizontal scale factor. One cell = `scale` blocks. Supported values: `1`, `4`, `16`, `64`, `256` (256 is Overworld only). |
+| `x`, `z` | Top-left corner of the area in scaled coordinates. |
+| `sx`, `sz` | Width and depth of the area in cells. |
+| `y` | Vertical origin in **biome coordinates** (always 1:4, regardless of `scale`), except when `scale == 1` where vertical is also 1:1. |
+| `sy` | Number of vertical layers. Use `1` for a flat 2D map. |
+
+<Note>
+The `y` field is in biome coordinates (1:4 scale) for all `scale` values except `scale=1`, where it is in block coordinates. For a surface map near sea level, use `r.y = 15` (biome coords ≈ y=60 blocks) when `scale > 1`, or `r.y = 63` when `scale = 1`.
+</Note>
+
+### Supported scale values
+
+The scale you choose affects both resolution and, for versions ≤ 1.17, which biome layer is sampled:
+
+| Scale | Blocks per cell | Layer (≤ 1.17) | Notes |
+|-------|-----------------|-----------------|-------|
+| `1` | 1 × 1 | Voronoi (1:1) | Full resolution; slowest |
+| `4` | 4 × 4 | River Mix (1:4) | Native biome resolution |
+| `16` | 16 × 16 | Shore (1:16) | One sample per chunk |
+| `64` | 64 × 64 | Rare Biome (1:64) | Coarse overview |
+| `256` | 256 × 256 | Biome (1:256) | Overworld only |
+
+For versions ≤ 1.17, each scale maps to a specific layer of the biome generation stack. This means coarser scales generate *different* (earlier, less refined) biome data — not just a downsampled version of the full-resolution output.
+
+## Allocating the cache
+
+Use `allocCache` to obtain a correctly-sized `int` buffer:
+
+```c
+int *biomeIds = allocCache(&g, r);
+```
+
+`allocCache` calls `malloc` internally; you must `free` the buffer when done. The buffer is indexed as:
+
+```c
+biomeIds[i_y * r.sx * r.sz + i_z * r.sx + i_x]
+```
+
+where `(i_x, i_y, i_z)` is a position **relative** to the range cuboid, i.e. `i_x` runs from `0` to `r.sx - 1`.
+
+## Generating biomes
+
+```c
+genBiomes(&g, biomeIds, r);
+```
+
+On success `genBiomes` returns `0` and fills `biomeIds` according to the index formula above. You must have called `applySeed` before this call.
+
+## Complete example: rendering a world map
+
+The following program is taken directly from the cubiomes README. It generates a 120×120 area at 1:16 scale, maps the biome IDs to colours, and saves the result as a PPM image.
+
+```c
+// generate an image of the world
+#include "generator.h"
+#include "util.h"
+
+int main()
+{
+    Generator g;
+    setupGenerator(&g, MC_1_18, LARGE_BIOMES);
+
+    uint64_t seed = 123LL;
+    applySeed(&g, DIM_OVERWORLD, seed);
+
+    Range r;
+    // 1:16, a.k.a. horizontal chunk scaling
+    r.scale = 16;
+    // Define the position and size for a horizontal area:
+    r.x = -60, r.z = -60;   // position (x,z)
+    r.sx = 120, r.sz = 120; // size (width,height)
+    // Set the vertical range as a plane near sea level at scale 1:4.
+    r.y = 15, r.sy = 1;
+
+    // Allocate the necessary cache for this range.
+    int *biomeIds = allocCache(&g, r);
+
+    // Generate the area inside biomeIds, indexed as:
+    // biomeIds[i_y*r.sx*r.sz + i_z*r.sx + i_x]
+    // where (i_x, i_y, i_z) is a position relative to the range cuboid.
+    genBiomes(&g, biomeIds, r);
+
+    // Map the biomes to an image buffer, with 4 pixels per biome cell.
+    int pix4cell = 4;
+    int imgWidth = pix4cell*r.sx, imgHeight = pix4cell*r.sz;
+    unsigned char biomeColors[256][3];
+    initBiomeColors(biomeColors);
+    unsigned char *rgb = (unsigned char *) malloc(3*imgWidth*imgHeight);
+    biomesToImage(rgb, biomeColors, biomeIds, r.sx, r.sz, pix4cell, 2);
+
+    // Save the RGB buffer to a PPM image file.
+    savePPM("map.ppm", rgb, imgWidth, imgHeight);
+
+    // Clean up.
+    free(biomeIds);
+    free(rgb);
+
+    return 0;
+}
+```
+
+## The `LARGE_BIOMES` flag
+
+Passing `LARGE_BIOMES` as the `flags` argument to `setupGenerator` replicates the world-type of the same name: biomes are roughly 4× larger. The rest of the API is unchanged — you use the same `Range`, the same `genBiomes` call, and the same index formula.
+
+```c
+setupGenerator(&g, MC_1_18, LARGE_BIOMES);
+```
+
+For standard worlds use `0` (or combine flags with bitwise OR if needed).
+
+## Utility functions from `util.h`
+
+The `util.h` header provides helpers for turning the raw biome ID buffer into a visual output:
+
+### `initBiomeColors`
+
+```c
+unsigned char biomeColors[256][3];
+initBiomeColors(biomeColors);
+```
+
+Fills a 256-entry RGB lookup table with default colours for each biome ID. `initBiomeTypeColors` fills the same table with colours based on biome category instead.
+
+### `biomesToImage`
+
+```c
+int biomesToImage(unsigned char *pixels,
+        unsigned char biomeColors[256][3], const int *biomes,
+        const unsigned int sx, const unsigned int sy,
+        const unsigned int pixscale, const int flip);
+```
+
+Converts the flat `biomeIds` array into an RGB pixel buffer. `pixscale` sets the number of pixels per biome cell (4 in the example above). `flip=2` flips the image vertically to match the typical map orientation where north (negative Z) is at the top.
+
+### `savePPM`
+
+```c
+int savePPM(const char* path, const unsigned char *pixels,
+        const unsigned int sx, const unsigned int sy);
+```
+
+Writes the RGB buffer to a PPM file. Returns `0` on success, `-1` if the file could not be opened, or `1` if the write was incomplete.
+
+## Workflow overview
+
+<Steps>
+  <Step title="Set up and seed the generator">
+    Call `setupGenerator` once, then `applySeed` for each seed you want to render.
+  </Step>
+  <Step title="Define the Range">
+    Set `r.scale`, `r.x`, `r.z`, `r.sx`, `r.sz`, `r.y`, and `r.sy` to describe the cuboid you want to generate.
+  </Step>
+  <Step title="Allocate the cache">
+    Call `int *biomeIds = allocCache(&g, r)` to get a correctly-sized buffer.
+  </Step>
+  <Step title="Generate biomes">
+    Call `genBiomes(&g, biomeIds, r)`. On success the buffer is filled; access cells via `biomeIds[i_y*r.sx*r.sz + i_z*r.sx + i_x]`.
+  </Step>
+  <Step title="Process and free">
+    Scan the buffer, render it to an image with `biomesToImage`, or pass it to a filter. Call `free(biomeIds)` when done.
+  </Step>
+</Steps>
+
+<Accordion title="Performance notes">
+`genBiomes` uses all available optimisations for the chosen generator and scale. For the layered generators (≤ 1.17) it generates the entire area through each layer in a single pass, which is substantially faster than calling `getBiomeAt` per cell — especially at coarse scales where intermediate layers cover large areas cheaply.
+
+For the noise-based generator (1.18+) the benefit is smaller but still meaningful at large `sx`/`sz` values. If you are scanning millions of seeds, prefer a coarser scale for the initial filter and only refine with `scale=1` on candidates.
+</Accordion>
+
+<CardGroup cols={2}>
+  <Card title="Query a single position" icon="crosshairs" href="/guides/biome-at-position">
+    Use `getBiomeAt` when you only need the biome at one coordinate.
+  </Card>
+  <Card title="Filter seeds by biome requirements" icon="filter" href="/guides/seed-filtering">
+    Use `checkForBiomes` to efficiently reject seeds that cannot contain the biomes you need.
+  </Card>
+</CardGroup>

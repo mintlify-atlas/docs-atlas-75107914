@@ -1,0 +1,160 @@
+---
+title: "Minecraft versions and dimensions in cubiomes"
+description: "Learn how cubiomes represents Minecraft versions and dimensions using the MCVersion and Dimension enums, and how to configure the generator for any world."
+---
+
+cubiomes supports Minecraft Java Edition from Alpha 1.2 / Beta 1.7 through the latest 1.21 releases. Every API call that performs biome generation requires you to specify both a version and a dimension, so understanding these two enumerations is the first step before writing any generator code.
+
+## MCVersion enum
+
+The `MCVersion` enum in `biomes.h` assigns a unique integer constant to each supported release. Constants follow the pattern `MC_X_Y` for patch releases and `MC_X` as a convenient alias that maps to the latest patch of that major release.
+
+```c
+// biomes.h (excerpt)
+enum MCVersion
+{
+    MC_UNDEF,
+    MC_B1_7,
+    MC_B1_8,
+    MC_1_0_0,  MC_1_0  = MC_1_0_0,
+    MC_1_1_0,  MC_1_1  = MC_1_1_0,
+    MC_1_2_5,  MC_1_2  = MC_1_2_5,
+    // ...
+    MC_1_17_1, MC_1_17 = MC_1_17_1,
+    MC_1_18_2, MC_1_18 = MC_1_18_2,
+    MC_1_19_4, MC_1_19 = MC_1_19_4,
+    MC_1_20_6, MC_1_20 = MC_1_20_6,
+    MC_1_21_WD,
+    MC_1_21 = MC_1_21_WD,
+    MC_NEWEST = MC_1_21,
+};
+```
+
+Use `MC_NEWEST` when you always want the latest supported version, or a specific constant such as `MC_1_18` when targeting a known release.
+
+### Version constants table
+
+| Alias | Resolves to | Notes |
+|---|---|---|
+| `MC_B1_7` | Beta 1.7 | Oldest supported; uses `BiomeNoiseBeta` |
+| `MC_B1_8` | Beta 1.8 | Transition to layered generation |
+| `MC_1_7` | `MC_1_7_10` | Major biome overhaul (layered) |
+| `MC_1_13` | `MC_1_13_2` | Ocean temperature layers added |
+| `MC_1_14` | `MC_1_14_4` | Bamboo jungles |
+| `MC_1_16` | `MC_1_16_5` | Nether biomes; Xoroshiro RNG |
+| `MC_1_17` | `MC_1_17_1` | Last version using layered generation |
+| `MC_1_18` | `MC_1_18_2` | New noise-based generation system |
+| `MC_1_19` | `MC_1_19_4` | Deep Dark and Mangrove Swamp |
+| `MC_1_20` | `MC_1_20_6` | Cherry Grove |
+| `MC_1_21` | `MC_1_21_WD` | Pale Garden (Winter Drop) |
+| `MC_NEWEST` | `MC_1_21` | Always tracks the latest release |
+
+<Note>
+Development effort focuses on the newest patch for each major release. Minor releases and versions ≤ 1.0 are available but considered experimental — results may not match the game exactly.
+</Note>
+
+## Dimension enum
+
+The `Dimension` enum encodes each of the three Minecraft dimensions as an integer. The values match Minecraft's own internal dimension IDs.
+
+```c
+// biomes.h (excerpt)
+enum Dimension
+{
+    DIM_NETHER    =  -1,
+    DIM_OVERWORLD =   0,
+    DIM_END       =  +1,
+    DIM_UNDEF     = 1000,
+};
+```
+
+| Constant | Value | When it applies |
+|---|---|---|
+| `DIM_NETHER` | `-1` | Nether biomes (MC 1.16+); uses `NetherNoise` |
+| `DIM_OVERWORLD` | `0` | Overworld; uses `LayerStack` or `BiomeNoise` |
+| `DIM_END` | `+1` | The End (MC 1.9+); uses `EndNoise` |
+| `DIM_UNDEF` | `1000` | Sentinel value; not passed to the generator |
+
+## Setting up a generator
+
+Use `setupGenerator()` to configure the version and flags, then `applySeed()` to bind a world seed and dimension. You must call both functions before generating any biomes.
+
+```c
+#include "generator.h"
+
+int main()
+{
+    Generator g;
+    uint64_t seed = 12345ULL;
+
+    // Configure for MC 1.18 Overworld, no special flags
+    setupGenerator(&g, MC_1_18, 0);
+
+    // Apply the world seed and select the Overworld dimension
+    applySeed(&g, DIM_OVERWORLD, seed);
+
+    // g is now ready for genBiomes() / getBiomeAt()
+    return 0;
+}
+```
+
+<Steps>
+  <Step title="Call setupGenerator">
+    Pass a pointer to a `Generator`, the `MCVersion` constant, and a flags value. This initializes internal layer or noise structures for the chosen version.
+  </Step>
+  <Step title="Call applySeed">
+    Pass the world seed (64-bit unsigned integer) and a `Dimension` constant. The generator derives all internal salts and noise states from this seed.
+  </Step>
+  <Step title="Generate biomes">
+    Call `genBiomes()` or `getBiomeAt()` as many times as needed. You can call `applySeed()` again to switch to a different seed or dimension without re-running `setupGenerator()`.
+  </Step>
+</Steps>
+
+## Generator flags
+
+The flags parameter in `setupGenerator()` accepts a bitwise OR of the following constants:
+
+```c
+// generator.h (excerpt)
+enum
+{
+    LARGE_BIOMES         = 0x1,
+    NO_BETA_OCEAN        = 0x2,
+    FORCE_OCEAN_VARIANTS = 0x4,
+};
+```
+
+| Flag | Effect |
+|---|---|
+| `LARGE_BIOMES` | Enables the Large Biomes world type (applies extra zoom passes in the layer stack, MC ≤ 1.17) |
+| `NO_BETA_OCEAN` | Suppresses ocean generation in Beta-era worlds |
+| `FORCE_OCEAN_VARIANTS` | Makes ocean variant biomes appear at scales higher than normal |
+
+Pass `0` when none of these options are needed. Flags are ignored for versions where they have no effect.
+
+```c
+// Large Biomes world in MC 1.16
+setupGenerator(&g, MC_1_16, LARGE_BIOMES);
+applySeed(&g, DIM_OVERWORLD, seed);
+```
+
+<AccordionGroup>
+  <Accordion title="Can I switch dimensions without calling setupGenerator again?">
+    Yes. `setupGenerator()` configures version-specific structures that do not change between dimensions. You only need to call `applySeed()` with the new `Dimension` constant to switch.
+  </Accordion>
+  <Accordion title="What happens if I pass MC_UNDEF or DIM_UNDEF?">
+    `MC_UNDEF` and `DIM_UNDEF` are sentinel values. Passing them to `setupGenerator()` or `applySeed()` produces undefined behavior. Always use a real version or dimension constant.
+  </Accordion>
+  <Accordion title="Do beta versions support all three dimensions?">
+    No. Beta 1.7 and Beta 1.8 only model Overworld generation. The Nether and End generators require MC 1.16 and MC 1.9 respectively.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Biome generation" icon="map" href="/concepts/biome-generation">
+    Learn how the Generator struct works and how to sample biomes from it.
+  </Card>
+  <Card title="Noise and layer systems" icon="wave-square" href="/concepts/noise-layers">
+    Understand the layer stack used in 1.17 and the noise system used in 1.18+.
+  </Card>
+</CardGroup>

@@ -1,0 +1,158 @@
+---
+title: 'Locate the world spawn and strongholds for any seed'
+description: 'Use initFirstStronghold, nextStronghold, and getSpawn to iterate over all stronghold positions and find the world spawn point for any seed.'
+---
+
+Strongholds and the world spawn point work differently from every other structure in cubiomes. Rather than picking a single candidate position in a grid region, Minecraft searches until it finds a suitable biome — which means you must iterate through positions in the order the game generates them. cubiomes exposes this as an iterator pattern through `StrongholdIter`, initialised by `initFirstStronghold` and advanced by `nextStronghold`. The world spawn similarly searches outward from the origin, and you choose between the accurate-but-slow `getSpawn` or the fast approximation `estimateSpawn`.
+
+## How stronghold generation works
+
+Strongholds are placed in rings radiating outward from the world origin. The first ring contains 3 strongholds; subsequent rings contain more. Each stronghold's angle within its ring is deterministic given the 48-bit seed, but the **exact block position** requires a biome check to find the nearest valid biome.
+
+Because of this, stronghold iteration has two parts:
+
+- `initFirstStronghold` computes the approximate position of the first stronghold (±112 blocks) from the 48-bit seed alone — no biome generator needed.
+- `nextStronghold` performs the biome check for the current iterator position, resolves the accurate block coordinate, and advances the iterator to the next approximate position.
+
+## The StrongholdIter struct
+
+```c
+STRUCT(StrongholdIter)
+{
+    Pos pos;        // accurate location of current stronghold
+    Pos nextapprox; // approxmimate location (+/-112 blocks) of next stronghold
+    int index;      // stronghold index counter
+    int ringnum;    // ring number for index
+    int ringmax;    // max index within ring
+    int ringidx;    // index within ring
+    double angle;   // next angle within ring
+    double dist;    // next distance from origin (in chunks)
+    uint64_t rnds;  // random number seed (48 bit)
+    int mc;         // minecraft version
+};
+```
+
+After a successful call to `nextStronghold`, read the accurate position from `sh.pos`. The `nextapprox` field holds the rough location of the **following** stronghold without requiring another biome check.
+
+## Initialising the iterator
+
+```c
+Pos initFirstStronghold(StrongholdIter *sh, int mc, uint64_t s48);
+```
+
+| Parameter | Description |
+|---|---|
+| `sh` | Pointer to an uninitialised `StrongholdIter`; pass `NULL` to skip initialisation |
+| `mc` | Minecraft version constant |
+| `s48` | World seed — only the lower 48 bits are used |
+
+The return value is the **approximate** block position of the first stronghold (±112 blocks). This estimate is useful for fast seed pre-filtering: if you know the first stronghold must be within a certain radius of the origin, reject seeds whose estimate is far out of range before paying for a biome check.
+
+## Advancing the iterator
+
+```c
+int nextStronghold(StrongholdIter *sh, const Generator *g);
+```
+
+Each call performs the biome check for the current iterator state, writes the accurate position to `sh->pos`, and prepares the next approximate position in `sh->nextapprox`.
+
+The return value is the number of strongholds that remain after this one. When the return value is 0 or negative, you have exhausted all strongholds for that seed.
+
+<Note>
+For Minecraft 1.19.3 and later you may pass `NULL` as the generator to iterate over approximate positions only, skipping biome checks entirely. This is useful for fast range filtering before a full accurate search.
+</Note>
+
+## Finding the world spawn
+
+cubiomes provides two functions for locating the world spawn:
+
+```c
+Pos getSpawn(const Generator *g);
+Pos estimateSpawn(const Generator *g, uint64_t *rng);
+```
+
+`getSpawn` performs the full Minecraft spawn search — it locates a valid biome near the origin and then walks the terrain looking for a grass or podzol block. Because cubiomes does not model blocks, it uses a statistical approximation based on biome identity. This function is **slow** and can take tens of milliseconds for some seeds.
+
+`estimateSpawn` terminates the search after the first successful biome check, assuming that a grass block is nearby. It is much faster and sufficient for most seed-finding tasks where exact spawn coordinates are not critical. The optional `rng` output receives the RNG state after the biome check, which can be used to recreate the search.
+
+<Warning>
+`getSpawn` accuracy depends on a grass-biome heuristic. For biomes that do not reliably contain grass (such as savannas near unusual borders) the result can differ from the in-game spawn by a few blocks. `estimateSpawn` trades even more accuracy for significantly better speed.
+</Warning>
+
+## Complete example: spawn and the first 12 strongholds
+
+```c
+// find spawn and the first N strongholds
+#include "finders.h"
+#include <stdio.h>
+
+int main()
+{
+    int mc = MC_1_18;
+    uint64_t seed = 3055141959546LL;
+
+    // Only the first stronghold has a position that can be estimated
+    // (+/-112 blocks) without biome check.
+    StrongholdIter sh;
+    Pos pos = initFirstStronghold(&sh, mc, seed);
+
+    printf("Seed: %" PRId64 "\n", (int64_t) seed);
+    printf("Estimated position of first stronghold: (%d, %d)\n", pos.x, pos.z);
+
+    Generator g;
+    setupGenerator(&g, mc, 0);
+    applySeed(&g, DIM_OVERWORLD, seed);
+
+    pos = getSpawn(&g);
+    printf("Spawn: (%d, %d)\n", pos.x, pos.z);
+
+    int i, N = 12;
+    for (i = 1; i <= N; i++)
+    {
+        if (nextStronghold(&sh, &g) <= 0)
+            break;
+        printf("Stronghold #%-3d: (%6d, %6d)\n", i, sh.pos.x, sh.pos.z);
+    }
+
+    return 0;
+}
+```
+
+<Steps>
+  <Step title="Estimate the first stronghold position">
+    `initFirstStronghold` initialises the iterator and returns the approximate block position of the first stronghold using only the lower 48 bits of the seed. No generator is needed at this stage.
+  </Step>
+  <Step title="Set up and seed the generator">
+    Create a `Generator`, call `setupGenerator` for the target version, then `applySeed` for the Overworld. Both `getSpawn` and `nextStronghold` require a seeded generator.
+  </Step>
+  <Step title="Find the world spawn">
+    Call `getSpawn(&g)` to locate the world spawn point. If speed matters more than precision, use `estimateSpawn(&g, NULL)` instead.
+  </Step>
+  <Step title="Iterate through strongholds">
+    Loop calling `nextStronghold(&sh, &g)`. After each successful call, `sh.pos` holds the accurate position of that stronghold. Stop when the return value is 0 or negative.
+  </Step>
+</Steps>
+
+## Performance considerations
+
+| Function | Speed | Notes |
+|---|---|---|
+| `initFirstStronghold` | Nanoseconds | No biome check; uses 48-bit seed only |
+| `estimateSpawn` | Microseconds | One biome check; approximate result |
+| `nextStronghold` (per call) | Microseconds | One biome check per stronghold |
+| `getSpawn` | Tens of milliseconds | Full grass-block search |
+
+When scanning large numbers of seeds, filter on the estimated first stronghold position before calling `nextStronghold`. If the approximate position is already outside your target radius you can skip the seed without paying for any biome checks.
+
+<Tip>
+The `nextapprox` field in `StrongholdIter` is always populated after each `nextStronghold` call. You can inspect it to decide whether to continue iterating without calling `nextStronghold` for the next entry, avoiding unnecessary biome checks for strongholds that are obviously out of range.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Find structure positions" icon="map-pin" href="/guides/structure-finding">
+    Learn the two-stage `getStructurePos` / `isViableStructurePos` workflow for non-stronghold structures.
+  </Card>
+  <Card title="Filter seeds by biome requirements" icon="filter" href="/guides/seed-filtering">
+    Combine stronghold iteration with `checkForBiomes` to require specific biomes near the stronghold or spawn.
+  </Card>
+</CardGroup>

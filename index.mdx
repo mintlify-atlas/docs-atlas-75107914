@@ -1,133 +1,60 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "cubiomes: Minecraft Biome Generation C Library"
+description: "cubiomes is a standalone C library that mimics Minecraft Java Edition biome and structure generation — built for seed finders and map tools."
 ---
 
-## Setting up
+cubiomes is a fast, standalone C library that replicates Minecraft Java Edition's biome and feature generation algorithms. It supports every major Minecraft version from Beta 1.7 through 1.21, covering all three dimensions, and is designed to power custom seed-finding applications and large-scale map viewers with minimal memory overhead.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Build cubiomes as a static or dynamic library and link it to your project.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Write your first seed-finding program in minutes with working C examples.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="book" href="/concepts/biome-generation">
+    Understand how biome generation, layers, noise, and seeds work in cubiomes.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/generator">
+    Browse the full public API — generator, finders, quad-base search, and more.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What you can do with cubiomes
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Find biomes at positions" icon="map-pin" href="/guides/biome-at-position">
+    Query the biome ID at any block or biome coordinate for any seed.
+  </Card>
+  <Card title="Generate biome maps" icon="map" href="/guides/biome-area-generation">
+    Render entire regions to a pixel buffer or PPM image at any scale.
+  </Card>
+  <Card title="Locate structures" icon="dungeon" href="/guides/structure-finding">
+    Find where Villages, Outposts, Monuments, and 25+ structure types generate.
+  </Card>
+  <Card title="Search quad-structures" icon="magnifying-glass" href="/guides/quad-structures">
+    Enumerate all 48-bit seed bases for quad-witch-huts and similar clusters.
+  </Card>
+  <Card title="Find spawn and strongholds" icon="compass" href="/guides/strongholds-and-spawn">
+    Locate world spawn and iterate over all stronghold positions.
+  </Card>
+  <Card title="Filter seeds by biome" icon="filter" href="/guides/seed-filtering">
+    Screen billions of seeds for required or excluded biome combinations.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Supported Minecraft versions
 
-## Make your content agent ready
+cubiomes accurately mimics biome generation for the following versions:
 
-Make your docs work for humans and AI agents alike.
+- **Alpha/Beta**: Alpha 1.2, Beta 1.7, Beta 1.8
+- **1.0 – 1.17**: Full layered biome generation
+- **1.18 – 1.21**: Noise-based climate generation (temperature, humidity, continentalness, erosion, weirdness)
 
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
+<Note>
+  Development focuses on the latest patch of each major release. Minor releases and major versions ≤ 1.0 are experimental.
+</Note>
 
-## Need inspiration?
+## Graphical viewer
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+If you prefer a no-code experience, [cubiomes-viewer](https://github.com/Cubitect/cubiomes-viewer) is a graphical application built on this library that lets you explore biomes and locate structures interactively.

@@ -1,0 +1,225 @@
+---
+title: "Biome generation: layered and noise-based systems"
+description: "Understand the Generator struct, Range type, layered vs. noise-based systems, scale values, and 3D cache indexing for cubiomes biome generation."
+---
+
+cubiomes reproduces Minecraft's biome generation in two distinct ways depending on the target version. Versions up to 1.17 use a layer stack that progressively transforms a continent map down to block-level resolution. Version 1.18 and newer use a noise-based system where six climate parameters are sampled at each point and mapped onto a biome through a decision tree. The same `Generator` struct, `Range` type, and `genBiomes()` function work across both systems, so you rarely need to know which system is active under the hood.
+
+## The Generator struct
+
+`Generator` (defined in `generator.h`) holds all state for a single generator instance. You should treat it as opaque — always initialize it through `setupGenerator()` and `applySeed()`.
+
+```c
+// generator.h (excerpt)
+STRUCT(Generator)
+{
+    int mc;
+    int dim;
+    uint32_t flags;
+    uint64_t seed;
+    uint64_t sha;
+
+    union {
+        struct { // MC 1.0 - 1.17
+            LayerStack ls;
+            Layer xlayer[5]; // buffer for custom entry layers @{1,4,16,64,256}
+            Layer *entry;
+        };
+        struct { // MC 1.18+
+            BiomeNoise bn;
+        };
+        struct { // MC A1.2 - B1.7
+            BiomeNoiseBeta bnb;
+        };
+    };
+    NetherNoise nn; // MC 1.16+
+    EndNoise en;    // MC 1.9+
+};
+```
+
+The `union` means only one of `ls`, `bn`, or `bnb` is active at a time — determined by the `mc` field set during `setupGenerator()`. The `nn` and `en` fields are always present because Nether and End generation are independent of the Overworld system.
+
+## Two generation systems
+
+### Layered generation (MC 1.0 – 1.17)
+
+In layered generation the world is built top-down through a stack of transformation layers. Each layer reads from a coarser parent and refines the output. The stack runs from continental scale down to individual block scale:
+
+| Scale | Meaning | Example layer |
+|---|---|---|
+| 1:256 | One cell = 256×256 blocks | `L_BIOME_256` — assigns biome categories |
+| 1:64 | One cell = 64×64 blocks | `L_HILLS_64` — adds hill and mutation variants |
+| 1:16 | One cell = 16×16 blocks | `L_SHORE_16` — computes beach and shore edges |
+| 1:4 | One cell = 4×4 blocks | `L_RIVER_MIX_4` / `L_OCEAN_MIX_4` — blends rivers and oceans |
+| 1:1 | One cell = one block | `L_VORONOI_1` — applies Voronoi zoom to reach block precision |
+
+Each layer has a deterministic pseudo-random function seeded from the world seed and a layer-specific salt, so the same seed always produces the same biome layout.
+
+### Noise-based generation (MC 1.18+)
+
+Starting with 1.18, Minecraft replaced the layer stack with a continuous noise map. Six climate parameters are sampled at each point using `DoublePerlinNoise`:
+
+| Index | Constant | Role |
+|---|---|---|
+| 0 | `NP_TEMPERATURE` | Hot/cold axis |
+| 1 | `NP_HUMIDITY` | Wet/dry axis |
+| 2 | `NP_CONTINENTALNESS` | Ocean–continent gradient |
+| 3 | `NP_EROSION` | Terrain roughness |
+| 4 | `NP_SHIFT` / `NP_DEPTH` | Vertical depth factor |
+| 5 | `NP_WEIRDNESS` | Rare variant selector |
+
+The six noise values form a point in climate space, and a biome decision tree (`BiomeTree`) maps that point to a `BiomeID`. The tree is embedded in the library and matches the data Minecraft uses at runtime.
+
+<Note>
+The 1.18 End dimension still uses the pre-1.18 `EndNoise` system. `BiomeNoise` only applies to the Overworld.
+</Note>
+
+## The Range type
+
+A `Range` describes the region you want to sample. You must fill it before calling `genBiomes()`.
+
+```c
+// biomenoise.h (excerpt)
+STRUCT(Range)
+{
+    int scale;      // horizontal scale: 1, 4, 16, 64, or 256
+    int x, z;       // position of the north-west corner (in scaled coordinates)
+    int sx, sz;     // horizontal size (number of cells)
+    int y;          // vertical position (scale 1:1 when scale==1, else 1:4)
+    int sy;         // vertical size; values <= 0 are treated as 1
+};
+```
+
+### Scale values
+
+| `scale` | Cell size | Typical use |
+|---|---|---|
+| `1` | 1×1 blocks | Exact block-level biome lookup with Voronoi sampling |
+| `4` | 4×4 blocks | Default biome scale; best balance of speed and accuracy |
+| `16` | 16×16 blocks | Chunk-level overview |
+| `64` | 64×64 blocks | Region-level fast scan |
+| `256` | 256×256 blocks | Continent-scale structure search |
+
+<Tip>
+Use scale `4` for most tasks. It matches the internal biome grid and avoids the extra Voronoi pass required at scale `1`.
+</Tip>
+
+The vertical axis behaves differently from the horizontal axes. When `scale == 1` the vertical position `y` is in block coordinates (1:1 mapping). For all other scales, `y` is in 1:4 coordinates (one unit = four blocks in height).
+
+### Common Range patterns
+
+```c
+// 2D area at default biome scale (1:4), no vertical range
+Range r_2d = {4, x, z, sx, sz};
+
+// Block-level area at sea level (y=63 in block coordinates)
+Range r_surf = {1, x, z, sx, sz, 63};
+
+// Chunk-scale area near sea level (y=15 in 1:4 coords = block 60)
+Range r_chunk = {16, x, z, sx, sz, 15};
+
+// 3D volume at scale 1:4
+Range r_vol = {4, x, z, sx, sz, y, sy};
+```
+
+## 3D cache indexing
+
+`genBiomes()` writes biome IDs into a flat integer array. The output is laid out as a row-major 3D array:
+
+```c
+cache[ i_y * r.sx * r.sz + i_z * r.sx + i_x ]
+```
+
+where `i_x`, `i_y`, `i_z` are zero-based indices into the range volume. For 2D generation (`sy == 0` or `sy == 1`) the `i_y` index is always `0`, so the formula collapses to `cache[ i_z * r.sx + i_x ]`.
+
+## Generating biomes
+
+The full workflow using `genBiomes()`:
+
+```c
+#include "generator.h"
+#include <stdlib.h>
+#include <stdio.h>
+
+int main()
+{
+    Generator g;
+    setupGenerator(&g, MC_1_18, 0);
+    applySeed(&g, DIM_OVERWORLD, 12345ULL);
+
+    // 64x64 area at scale 1:4, centered near origin
+    Range r = {4, -32, -32, 64, 64};
+
+    // Allocate a cache buffer sized for this range
+    int *cache = allocCache(&g, r);
+    if (!cache)
+        return 1;
+
+    // Generate biomes into cache
+    if (genBiomes(&g, cache, r) != 0)
+    {
+        free(cache);
+        return 1;
+    }
+
+    // Read individual biome IDs
+    for (int iz = 0; iz < r.sz; iz++)
+    {
+        for (int ix = 0; ix < r.sx; ix++)
+        {
+            int biome = cache[iz * r.sx + ix];
+            printf("(%d, %d) -> biome %d\n",
+                r.x + ix, r.z + iz, biome);
+        }
+    }
+
+    free(cache);
+    return 0;
+}
+```
+
+<Steps>
+  <Step title="Initialize the generator">
+    Call `setupGenerator(&g, mc, flags)` and `applySeed(&g, dim, seed)`.
+  </Step>
+  <Step title="Define a Range">
+    Fill a `Range` with the desired scale, position, and size. Use `sy = 0` for a 2D area.
+  </Step>
+  <Step title="Allocate the cache">
+    Call `allocCache(&g, r)` to get a correctly-sized buffer from `malloc`. You are responsible for calling `free()` on it.
+  </Step>
+  <Step title="Call genBiomes">
+    Pass `&g`, the cache pointer, and the range. A return value of `0` indicates success.
+  </Step>
+  <Step title="Read the results">
+    Index the cache with `cache[i_y*r.sx*r.sz + i_z*r.sx + i_x]`. The value is a `BiomeID` integer from `biomes.h`.
+  </Step>
+</Steps>
+
+For a single-point query, `getBiomeAt()` is a more convenient alternative that handles allocation internally:
+
+```c
+// Get the biome at block coordinates (x=0, y=64, z=0) at scale 1
+int biome = getBiomeAt(&g, 1, 0, 64, 0);
+```
+
+<AccordionGroup>
+  <Accordion title="What is the sha field in Generator?">
+    `sha` stores the first 8 bytes of the SHA-256 hash of the world seed. It is used to seed the Voronoi noise in MC 1.15+. `applySeed()` computes it automatically — you do not need to set it yourself.
+  </Accordion>
+  <Accordion title="Can I reuse the same cache buffer for multiple calls?">
+    Yes, as long as the buffer is at least as large as required by `getMinCacheSize()` for the new range. The buffer is overwritten on each call.
+  </Accordion>
+  <Accordion title="Does genBiomes work for the Nether and End?">
+    Yes. After calling `applySeed(&g, DIM_NETHER, seed)` or `applySeed(&g, DIM_END, seed)`, `genBiomes()` delegates to `genNetherScaled()` or `genEndScaled()` automatically.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Versions and dimensions" icon="tag" href="/concepts/versions-and-dimensions">
+    Reference for MCVersion and Dimension enum constants.
+  </Card>
+  <Card title="Noise and layer systems" icon="wave-square" href="/concepts/noise-layers">
+    Deep dive into PerlinNoise, OctaveNoise, and the layer stack.
+  </Card>
+</CardGroup>

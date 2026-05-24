@@ -1,0 +1,120 @@
+---
+title: "Install cubiomes C library: make and CMake"
+description: "Clone cubiomes from GitHub and build a static or shared library using make or CMake. Includes linker flags for Java RNG emulation."
+---
+
+cubiomes ships as source code — you build it into a static archive (`libcubiomes.a`) or a shared library (`libcubiomes.so`) and then link your own programs against it. The repository includes both a `makefile` and a `CMakeLists.txt`, so you can use whichever build system fits your project.
+
+## Prerequisites
+
+- GCC or a compatible C compiler
+- `make` (for the makefile build) **or** CMake ≥ 2.8 (for the CMake build)
+- `git` to clone the repository
+
+## Build with make
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/Cubitect/cubiomes.git
+    cd cubiomes
+    ```
+  </Step>
+
+  <Step title="Build the static library">
+    Running `make` (which defaults to `make release`) compiles all source files with `-O3 -fwrapv` and bundles them into `libcubiomes.a`:
+
+    ```bash
+    make
+    ```
+
+    Three build targets are available:
+
+    | Target | Flags added |
+    |---|---|
+    | `make release` (default) | `-O3` |
+    | `make debug` | `-O0 -ggdb3 -DDEBUG` |
+    | `make native` | `-O3 -march=native -ffast-math` |
+  </Step>
+</Steps>
+
+<Note>
+On Linux and macOS, the makefile automatically adds `-pthread` to the linker flags and `-fPIC` to the release build, producing position-independent code suitable for shared libraries.
+</Note>
+
+## Build with CMake
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/Cubitect/cubiomes.git
+    cd cubiomes
+    ```
+  </Step>
+
+  <Step title="Configure and build">
+    ```bash
+    cmake -B build
+    cmake --build build
+    ```
+
+    CMake defaults to a `Release` build. To build a debug configuration:
+
+    ```bash
+    cmake -B build -DCMAKE_BUILD_TYPE=Debug
+    cmake --build build
+    ```
+  </Step>
+
+  <Step title="Install headers and libraries (optional)">
+    ```bash
+    cmake --install build
+    ```
+
+    This installs the shared library (`cubiomes`), the static library (`cubiomes_static`), and all public headers to your system's default prefix.
+  </Step>
+</Steps>
+
+CMake builds both a shared library and a static library from the same object files. Position-independent code (`-fPIC`) is set on the object target automatically.
+
+## Link your project
+
+Once you have built `libcubiomes.a` or `libcubiomes.so`, compile and link your program from inside the `cubiomes` directory:
+
+<CodeGroup>
+
+```bash Static
+gcc your_program.c libcubiomes.a -fwrapv -lm
+```
+
+```bash Dynamic
+gcc your_program.c -L. -lcubiomes -fwrapv -lm
+```
+
+</CodeGroup>
+
+<Warning>
+Always include `-fwrapv`. cubiomes emulates Java's RNG, which relies on two's complement signed integer wraparound. Without `-fwrapv`, signed integer overflow is undefined behavior in C, and the compiler may produce incorrect results or eliminate the overflow entirely.
+</Warning>
+
+If your makefile enables pthreads (the default on Linux and macOS), add `-lpthread` when linking:
+
+```bash
+gcc your_program.c libcubiomes.a -fwrapv -lm -lpthread
+```
+
+## What gets built
+
+The library is composed of the following translation units, each with a corresponding public header:
+
+| Source file | Header | Purpose |
+|---|---|---|
+| `generator.c` | `generator.h` | Biome generator setup and query |
+| `biomes.c` | `biomes.h` | Biome IDs, versions, dimensions |
+| `finders.c` | `finders.h` | Structure position and viability |
+| `layers.c` | `layers.h` | Layered generation (≤ 1.17) |
+| `biomenoise.c` | `biomenoise.h` | Noise-based generation (1.18+) |
+| `noise.c` | `noise.h` | Perlin/simplex noise primitives |
+| `quadbase.c` | `quadbase.h` | Quad-structure seed bases |
+| `util.c` | `util.h` | Image output and utility helpers |
+| `rng.c` | `rng.h` | Java-compatible RNG |

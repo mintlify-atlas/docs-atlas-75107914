@@ -1,0 +1,357 @@
+---
+title: "Biome constants: MCVersion, Dimension, and BiomeID"
+description: "Reference for cubiomes biomes.h — the MCVersion enum (Beta 1.7 to 1.21), Dimension enum, full BiomeID list, and biome property helper functions."
+---
+
+The `biomes.h` header defines the version and biome constants that appear throughout the entire cubiomes API. Every function that accepts a version argument expects one of the `MCVersion` constants. Biome IDs are used as return values from `getBiomeAt`, `genBiomes`, and related functions, and as inputs to the helper functions described below.
+
+## `MCVersion` enum
+
+`MCVersion` maps Minecraft release strings to integer constants. Use `MC_1_X` aliases to refer to the latest patch of each major release. Development effort focuses on the newest patch for each major release; minor releases and versions at or before 1.0 are experimental.
+
+| Constant       | Alias          | Notes                        |
+| -------------- | -------------- | ---------------------------- |
+| `MC_UNDEF`     |                | Undefined / unset version.   |
+| `MC_B1_7`      |                | Beta 1.7                     |
+| `MC_B1_8`      |                | Beta 1.8                     |
+| `MC_1_0_0`     | `MC_1_0`       |                              |
+| `MC_1_1_0`     | `MC_1_1`       |                              |
+| `MC_1_2_5`     | `MC_1_2`       |                              |
+| `MC_1_3_2`     | `MC_1_3`       |                              |
+| `MC_1_4_7`     | `MC_1_4`       |                              |
+| `MC_1_5_2`     | `MC_1_5`       |                              |
+| `MC_1_6_4`     | `MC_1_6`       |                              |
+| `MC_1_7_10`    | `MC_1_7`       |                              |
+| `MC_1_8_9`     | `MC_1_8`       |                              |
+| `MC_1_9_4`     | `MC_1_9`       |                              |
+| `MC_1_10_2`    | `MC_1_10`      |                              |
+| `MC_1_11_2`    | `MC_1_11`      |                              |
+| `MC_1_12_2`    | `MC_1_12`      |                              |
+| `MC_1_13_2`    | `MC_1_13`      |                              |
+| `MC_1_14_4`    | `MC_1_14`      |                              |
+| `MC_1_15_2`    | `MC_1_15`      |                              |
+| `MC_1_16_1`    |                | First 1.16 release.          |
+| `MC_1_16_5`    | `MC_1_16`      |                              |
+| `MC_1_17_1`    | `MC_1_17`      |                              |
+| `MC_1_18_2`    | `MC_1_18`      | 3D biomes introduced.        |
+| `MC_1_19_2`    |                |                              |
+| `MC_1_19_4`    | `MC_1_19`      |                              |
+| `MC_1_20_6`    | `MC_1_20`      |                              |
+| `MC_1_21_1`    |                |                              |
+| `MC_1_21_3`    |                |                              |
+| `MC_1_21_WD`   | `MC_1_21`, `MC_NEWEST` | Winter Drop (version TBA). |
+
+## `Dimension` enum
+
+| Constant        | Value  | Description     |
+| --------------- | ------ | --------------- |
+| `DIM_NETHER`    | `-1`   | The Nether.     |
+| `DIM_OVERWORLD` | `0`    | The Overworld.  |
+| `DIM_END`       | `+1`   | The End.        |
+| `DIM_UNDEF`     | `1000` | Undefined.      |
+
+## `BiomeID` enum
+
+Biome IDs are integers used throughout the API. The table below lists every constant together with any legacy alias and the version it was introduced.
+
+### Land biomes
+
+| ID | Constant          | Legacy alias         |
+| -- | ----------------- | -------------------- |
+| 0  | `ocean`           |                      |
+| 1  | `plains`          |                      |
+| 2  | `desert`          |                      |
+| 3  | `mountains`       | `extremeHills`       |
+| 4  | `forest`          |                      |
+| 5  | `taiga`           |                      |
+| 6  | `swamp`           | `swampland`          |
+| 7  | `river`           |                      |
+| 12 | `snowy_tundra`    | `icePlains`          |
+| 13 | `snowy_mountains` | `iceMountains`       |
+| 14 | `mushroom_fields` | `mushroomIsland`     |
+| 15 | `mushroom_field_shore` | `mushroomIslandShore` |
+| 16 | `beach`           |                      |
+| 17 | `desert_hills`    | `desertHills`        |
+| 18 | `wooded_hills`    | `forestHills`        |
+| 19 | `taiga_hills`     | `taigaHills`         |
+| 20 | `mountain_edge`   | `extremeHillsEdge`   |
+| 21 | `jungle`          |                      |
+| 22 | `jungle_hills`    | `jungleHills`        |
+| 23 | `jungle_edge`     | `jungleEdge`         |
+| 25 | `stone_shore`     | `stoneBeach`         |
+| 26 | `snowy_beach`     | `coldBeach`          |
+| 27 | `birch_forest`    | `birchForest`        |
+| 28 | `birch_forest_hills` | `birchForestHills` |
+| 29 | `dark_forest`     | `roofedForest`       |
+| 30 | `snowy_taiga`     | `coldTaiga`          |
+| 31 | `snowy_taiga_hills` | `coldTaigaHills`   |
+| 32 | `giant_tree_taiga` | `megaTaiga`         |
+| 33 | `giant_tree_taiga_hills` | `megaTaigaHills` |
+| 34 | `wooded_mountains` | `extremeHillsPlus`  |
+| 35 | `savanna`         |                      |
+| 36 | `savanna_plateau` | `savannaPlateau`     |
+| 37 | `badlands`        | `mesa`               |
+| 38 | `wooded_badlands_plateau` | `mesaPlateau_F` |
+| 39 | `badlands_plateau` | `mesaPlateau`       |
+| 127| `the_void`        |                      |
+| 168| `bamboo_jungle`   | *(1.14)*             |
+| 169| `bamboo_jungle_hills` | *(1.14)*         |
+| 177| `meadow`          | *(1.18)*             |
+| 178| `grove`           | *(1.18)*             |
+| 179| `snowy_slopes`    | *(1.18)*             |
+| 180| `jagged_peaks`    | *(1.18)*             |
+| 181| `frozen_peaks`    | *(1.18)*             |
+| 182| `stony_peaks`     | *(1.18)*             |
+| 183| `deep_dark`       | *(1.19)*             |
+| 184| `mangrove_swamp`  | *(1.19)*             |
+| 185| `cherry_grove`    | *(1.20)*             |
+| 186| `pale_garden`     | *(1.21 Winter Drop)* |
+
+### Ocean biomes
+
+| ID | Constant              | Legacy alias         |
+| -- | --------------------- | -------------------- |
+| 0  | `ocean`               |                      |
+| 10 | `frozen_ocean`        | `frozenOcean`        |
+| 24 | `deep_ocean`          | `deepOcean`          |
+| 44 | `warm_ocean`          | `warmOcean`          |
+| 45 | `lukewarm_ocean`      | `lukewarmOcean`      |
+| 46 | `cold_ocean`          | `coldOcean`          |
+| 47 | `deep_warm_ocean`     | `warmDeepOcean`      |
+| 48 | `deep_lukewarm_ocean` | `lukewarmDeepOcean`  |
+| 49 | `deep_cold_ocean`     | `coldDeepOcean`      |
+| 50 | `deep_frozen_ocean`   | `frozenDeepOcean`    |
+
+### Nether biomes
+
+| ID  | Constant            |
+| --- | ------------------- |
+| 8   | `nether_wastes` (`hell`) |
+| 170 | `soul_sand_valley`  |
+| 171 | `crimson_forest`    |
+| 172 | `warped_forest`     |
+| 173 | `basalt_deltas`     |
+
+### End biomes
+
+| ID | Constant           |
+| -- | ------------------ |
+| 9  | `the_end` (`sky`)  |
+| 40 | `small_end_islands`|
+| 41 | `end_midlands`     |
+| 42 | `end_highlands`    |
+| 43 | `end_barrens`      |
+
+### Mutated (modified) biome variants
+
+Mutated biomes have IDs equal to the base biome ID plus 128.
+
+| ID  | Constant                           |
+| --- | ---------------------------------- |
+| 129 | `sunflower_plains`                 |
+| 130 | `desert_lakes`                     |
+| 131 | `gravelly_mountains`               |
+| 132 | `flower_forest`                    |
+| 133 | `taiga_mountains`                  |
+| 134 | `swamp_hills`                      |
+| 140 | `ice_spikes`                       |
+| 149 | `modified_jungle`                  |
+| 151 | `modified_jungle_edge`             |
+| 155 | `tall_birch_forest`                |
+| 156 | `tall_birch_hills`                 |
+| 157 | `dark_forest_hills`                |
+| 158 | `snowy_taiga_mountains`            |
+| 160 | `giant_spruce_taiga`               |
+| 161 | `giant_spruce_taiga_hills`         |
+| 162 | `modified_gravelly_mountains`      |
+| 163 | `shattered_savanna`                |
+| 164 | `shattered_savanna_plateau`        |
+| 165 | `eroded_badlands`                  |
+| 166 | `modified_wooded_badlands_plateau` |
+| 167 | `modified_badlands_plateau`        |
+
+### Beta biomes (Alpha 1.2 – Beta 1.7)
+
+| ID | Constant          |
+| -- | ----------------- |
+| 51 | `seasonal_forest` |
+| 52 | `rainforest`      |
+| 53 | `shrubland`       |
+
+## Helper functions
+
+### `biomeExists`
+
+```c
+int biomeExists(int mc, int id);
+```
+
+Returns non-zero if the biome `id` exists in the given Minecraft version.
+
+<ParamField path="mc" type="int" required>
+  Minecraft version constant.
+</ParamField>
+
+<ParamField path="id" type="int" required>
+  Biome ID to test.
+</ParamField>
+
+---
+
+### `isOverworld`
+
+```c
+int isOverworld(int mc, int id);
+```
+
+Returns non-zero if the biome generates naturally in the Overworld for the given version. Returns `0` for biomes that exist in the version but do not generate (e.g. `the_void`).
+
+<ParamField path="mc" type="int" required>
+  Minecraft version constant.
+</ParamField>
+
+<ParamField path="id" type="int" required>
+  Biome ID to test.
+</ParamField>
+
+---
+
+### `getDimension`
+
+```c
+int getDimension(int id);
+```
+
+Returns the dimension constant (`DIM_OVERWORLD`, `DIM_NETHER`, or `DIM_END`) in which the biome `id` naturally generates.
+
+<ParamField path="id" type="int" required>
+  Biome ID to look up.
+</ParamField>
+
+---
+
+### `getMutated`
+
+```c
+int getMutated(int mc, int id);
+```
+
+Returns the mutated (modified) variant of `id` for the given version, or `-1` if no mutated variant exists.
+
+<ParamField path="mc" type="int" required>
+  Minecraft version constant.
+</ParamField>
+
+<ParamField path="id" type="int" required>
+  Base biome ID.
+</ParamField>
+
+---
+
+### `getCategory`
+
+```c
+int getCategory(int mc, int id);
+```
+
+Returns the category integer for the biome. Category values correspond to internal biome temperature groups used by the layer stack.
+
+<ParamField path="mc" type="int" required>
+  Minecraft version constant.
+</ParamField>
+
+<ParamField path="id" type="int" required>
+  Biome ID.
+</ParamField>
+
+---
+
+### `areSimilar`
+
+```c
+int areSimilar(int mc, int id1, int id2);
+```
+
+Returns non-zero if the two biomes are considered similar according to the version's biome similarity rules (e.g. a biome and its mutated variant).
+
+<ParamField path="mc" type="int" required>
+  Minecraft version constant.
+</ParamField>
+
+<ParamField path="id1" type="int" required>
+  First biome ID.
+</ParamField>
+
+<ParamField path="id2" type="int" required>
+  Second biome ID.
+</ParamField>
+
+---
+
+### `isMesa`
+
+```c
+int isMesa(int id);
+```
+
+Returns non-zero if `id` is any badlands (mesa) biome variant.
+
+<ParamField path="id" type="int" required>
+  Biome ID.
+</ParamField>
+
+---
+
+### `isShallowOcean`
+
+```c
+int isShallowOcean(int id);
+```
+
+Returns non-zero if `id` is a non-deep ocean biome.
+
+<ParamField path="id" type="int" required>
+  Biome ID.
+</ParamField>
+
+---
+
+### `isDeepOcean`
+
+```c
+int isDeepOcean(int id);
+```
+
+Returns non-zero if `id` is a deep ocean variant.
+
+<ParamField path="id" type="int" required>
+  Biome ID.
+</ParamField>
+
+---
+
+### `isOceanic`
+
+```c
+int isOceanic(int id);
+```
+
+Returns non-zero if `id` is any ocean biome (shallow or deep).
+
+<ParamField path="id" type="int" required>
+  Biome ID.
+</ParamField>
+
+---
+
+### `isSnowy`
+
+```c
+int isSnowy(int id);
+```
+
+Returns non-zero if `id` is a snowy biome.
+
+<ParamField path="id" type="int" required>
+  Biome ID.
+</ParamField>

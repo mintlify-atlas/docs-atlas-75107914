@@ -1,0 +1,106 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "cubiomes",
+  "projectDescription": "A standalone C library that mimics Minecraft Java Edition biome and structure generation for fast seed-finding and map visualization.",
+  "theme": "aspen",
+  "primaryColor": "#3d7a4f",
+  "lightColor": "#5aab6e",
+  "darkColor": "#2a5738",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/versions-and-dimensions",
+              "concepts/biome-generation",
+              "concepts/noise-layers",
+              "concepts/rng"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/biome-at-position",
+              "guides/biome-area-generation",
+              "guides/structure-finding",
+              "guides/quad-structures",
+              "guides/strongholds-and-spawn",
+              "guides/seed-filtering"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Generator API",
+            "pages": [
+              "api/generator",
+              "api/biomes",
+              "api/noise"
+            ]
+          },
+          {
+            "group": "Finders API",
+            "pages": [
+              "api/finders",
+              "api/quadbase",
+              "api/rng",
+              "api/util"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Fast Minecraft biome generation for all versions from Beta 1.7 to 1.21",
+    "Multi-dimensional support: Overworld, Nether, and End",
+    "Structure position finding for 25+ structure types",
+    "Quad-structure seed searching with multi-threaded 48-bit seed enumeration",
+    "Biome filtering with configurable required and excluded biomes",
+    "Noise-based generation for 1.18+ (climate parameters: temperature, humidity, continentalness, erosion, weirdness)",
+    "Layered generation for versions up to 1.17",
+    "Spawn point and stronghold location finding",
+    "Utility functions for biome colormaps and PPM image export",
+    "C and C++ compatible header-only RNG and inline functions"
+  ],
+  "publicApiSurface": [
+    "setupGenerator(Generator *g, int mc, uint32_t flags)",
+    "applySeed(Generator *g, int dim, uint64_t seed)",
+    "genBiomes(const Generator *g, int *cache, Range r)",
+    "getBiomeAt(const Generator *g, int scale, int x, int y, int z)",
+    "allocCache(const Generator *g, Range r)",
+    "getStructurePos(int structureType, int mc, uint64_t seed, int regX, int regZ, Pos *pos)",
+    "isViableStructurePos(int structType, Generator *g, int blockX, int blockZ, uint32_t flags)",
+    "getStructureConfig(int structureType, int mc, StructureConfig *sconf)",
+    "searchAll48(uint64_t **seedbuf, uint64_t *buflen, const char *path, int threads, ...)",
+    "isQuadBase(const StructureConfig sconf, uint64_t seed, int radius)",
+    "initFirstStronghold(StrongholdIter *sh, int mc, uint64_t s48)",
+    "nextStronghold(StrongholdIter *sh, const Generator *g)",
+    "getSpawn(const Generator *g)",
+    "estimateSpawn(const Generator *g, uint64_t *rng)",
+    "setupBiomeFilter(BiomeFilter *bf, int mc, uint32_t flags, ...)",
+    "checkForBiomes(Generator *g, int *cache, Range r, int dim, uint64_t seed, ...)",
+    "moveStructure(uint64_t baseSeed, int regX, int regZ)",
+    "getVariant(StructureVariant *sv, int structType, int mc, uint64_t seed, int blockX, int blockZ, int biomeID)",
+    "initBiomeColors(unsigned char biomeColors[256][3])",
+    "biomesToImage(unsigned char *pixels, unsigned char biomeColors[256][3], ...)",
+    "savePPM(const char* path, const unsigned char *pixels, unsigned int sx, unsigned int sy)",
+    "mc2str(int mc)",
+    "biome2str(int mc, int id)",
+    "loadSavedSeeds(const char *fnam, uint64_t *scnt)"
+  ]
+}

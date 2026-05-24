@@ -1,0 +1,185 @@
+---
+title: "RNG API: Java Random, Xoroshiro, and seed helpers"
+description: "Complete reference for cubiomes rng.h — Java LCG functions, Xoroshiro 128 state, MC seed pipeline (getLayerSalt, getChunkSeed), and math utilities."
+---
+
+cubiomes implements two RNG systems that match Minecraft's own: the Java `Random` linear congruential generator (used in Minecraft ≤ 1.17 and for most structure positioning), and Xoroshiro 128 (used in Minecraft 1.18+ world generation). Both are defined as inline functions in `rng.h`.
+
+<Warning>
+  Compile with `-fwrapv` when using this library. This enforces two's complement arithmetic for signed integer overflow, which is required to correctly emulate Java's integer behavior.
+</Warning>
+
+## Type aliases
+
+```c
+typedef int8_t   i8;   typedef uint8_t   u8;
+typedef int16_t  i16;  typedef uint16_t  u16;
+typedef int32_t  i32;  typedef uint32_t  u32;
+typedef int64_t  i64;  typedef uint64_t  u64;
+typedef float    f32;  typedef double    f64;
+```
+
+## Java Random (LCG)
+
+Implements the 48-bit linear congruential generator from `java.util.Random`.
+
+### setSeed
+
+```c
+void setSeed(uint64_t *seed, uint64_t value);
+```
+
+Initializes the seed state: `*seed = (value ^ 0x5deece66d) & ((1ULL << 48) - 1)`.
+
+### next
+
+```c
+int next(uint64_t *seed, const int bits);
+```
+
+Advances the LCG and returns the top `bits` bits.
+
+### nextInt
+
+```c
+int nextInt(uint64_t *seed, const int n);
+```
+
+Returns a uniformly distributed integer in `[0, n)`. Handles powers-of-two as a special case matching Java's behavior.
+
+### nextLong
+
+```c
+uint64_t nextLong(uint64_t *seed);
+```
+
+Returns a 64-bit integer by combining two 32-bit calls.
+
+### nextFloat / nextDouble
+
+```c
+float  nextFloat(uint64_t *seed);
+double nextDouble(uint64_t *seed);
+```
+
+Returns a float in `[0, 1)` using 24 or 53 bits respectively.
+
+### skipNextN
+
+```c
+void skipNextN(uint64_t *seed, uint64_t n);
+```
+
+Advances the LCG by `n` steps in O(log n) time using the fast-forward formula for linear recurrences.
+
+### JAVA_NEXT_INT24
+
+```c
+#define JAVA_NEXT_INT24(S, X)  /* ... */
+```
+
+Macro computing `nextInt(S, 24)` with optimal assembly output. Used in hot paths like `isQuadBaseFeature24`.
+
+## Xoroshiro 128
+
+Used by Minecraft 1.18+ world generation. Operates on a 128-bit state stored in a `Xoroshiro` struct.
+
+```c
+STRUCT(Xoroshiro) { uint64_t lo, hi; };
+```
+
+### xSetSeed
+
+```c
+void xSetSeed(Xoroshiro *xr, uint64_t value);
+```
+
+Initializes the Xoroshiro state from a single 64-bit seed value using a mixing step.
+
+### xNextLong / xNextInt / xNextDouble / xNextFloat
+
+```c
+uint64_t xNextLong(Xoroshiro *xr);
+int      xNextInt(Xoroshiro *xr, uint32_t n);
+double   xNextDouble(Xoroshiro *xr);
+float    xNextFloat(Xoroshiro *xr);
+```
+
+Standard random outputs from the Xoroshiro generator.
+
+### xSkipN
+
+```c
+void xSkipN(Xoroshiro *xr, int count);
+```
+
+Advances the state by `count` steps.
+
+### Java-compatible variants
+
+```c
+uint64_t xNextLongJ(Xoroshiro *xr);
+int      xNextIntJ(Xoroshiro *xr, uint32_t n);
+```
+
+These produce values matching Java's `RandomSource` interface by combining two 32-bit halves, used when cubiomes needs to replicate Minecraft's exact behavior for Xoroshiro-based worlds.
+
+## MC seed helpers
+
+These functions implement the layer-seed pipeline that determines biome generation per chunk.
+
+```
+getLayerSalt(n) → layerSalt (ls)
+(ls, worldSeed) → startSalt (st), startSeed (ss)
+(ss, x, z)      → chunkSeed (cs)
+mcFirstInt(cs, mod) → first PRNG output
+```
+
+### mcStepSeed
+
+```c
+uint64_t mcStepSeed(uint64_t s, uint64_t salt);
+```
+
+One step of the MC seed mixing function. The core operation used throughout the pipeline.
+
+### mcFirstInt / mcFirstIsZero
+
+```c
+int mcFirstInt(uint64_t s, int mod);
+int mcFirstIsZero(uint64_t s, int mod);
+```
+
+Extract the first random integer from a chunk seed, modulo `mod`. `mcFirstIsZero` is an optimized check for whether the result is zero.
+
+### getChunkSeed
+
+```c
+uint64_t getChunkSeed(uint64_t ss, int x, int z);
+```
+
+Derives the chunk seed from a start seed and chunk coordinates.
+
+### getLayerSalt / getStartSalt / getStartSeed
+
+```c
+uint64_t getLayerSalt(uint64_t salt);
+uint64_t getStartSalt(uint64_t ws, uint64_t ls);
+uint64_t getStartSeed(uint64_t ws, uint64_t ls);
+```
+
+Build the layer salt and start seed from the world seed and layer salt.
+
+## Math utilities
+
+```c
+double lerp(double part, double from, double to);
+double lerp2(double dx, double dy, double v00, double v10, double v01, double v11);
+double lerp3(double dx, double dy, double dz, /* 8 corner values */);
+double clampedLerp(double part, double from, double to);
+
+uint64_t mulInv(uint64_t x, uint64_t m);  // modular inverse
+uint64_t rotl64(uint64_t x, uint8_t b);
+uint32_t rotr32(uint32_t a, uint8_t b);
+int32_t  floordiv(int32_t a, int32_t b);
+```

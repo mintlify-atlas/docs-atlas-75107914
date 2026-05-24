@@ -1,0 +1,453 @@
+---
+title: "Noise API: Perlin, octave, and double-Perlin functions"
+description: "Reference for cubiomes noise.h — PerlinNoise, OctaveNoise, DoublePerlinNoise structs and their init, sample, and octave functions."
+---
+
+The noise API provides the low-level noise primitives that power biome generation from MC 1.18 onward, as well as Beta-era terrain. There are three noise layers: single-octave `PerlinNoise`, multi-octave `OctaveNoise`, and the paired `DoublePerlinNoise`. Most callers do not need to use these directly — they are initialized automatically inside `BiomeNoise` — but they are exposed for custom noise sampling and analysis.
+
+## Structs
+
+### `PerlinNoise`
+
+A single octave of Perlin (or simplex) noise.
+
+```c
+typedef struct PerlinNoise {
+    uint8_t d[256+1]; // permutation table
+    uint8_t h2;
+    double  a, b, c;  // origin offsets
+    double  amplitude;
+    double  lacunarity;
+    double  d2;
+    double  t2;
+} PerlinNoise;
+```
+
+| Field       | Type       | Description                             |
+| ----------- | ---------- | --------------------------------------- |
+| `d`         | `uint8_t[]`| 257-element permutation table.          |
+| `a, b, c`   | `double`   | Origin offsets derived from the seed.   |
+| `amplitude` | `double`   | Per-octave amplitude scaling factor.    |
+| `lacunarity`| `double`   | Frequency multiplier between octaves.   |
+
+---
+
+### `OctaveNoise`
+
+A stack of `PerlinNoise` octaves combined with exponential amplitude weighting.
+
+```c
+typedef struct OctaveNoise {
+    int          octcnt;   // number of active octaves
+    PerlinNoise *octaves;  // pointer to octave array
+} OctaveNoise;
+```
+
+| Field    | Type          | Description                               |
+| -------- | ------------- | ----------------------------------------- |
+| `octcnt` | `int`         | Number of active octaves in the stack.    |
+| `octaves`| `PerlinNoise *`| Array of `octcnt` initialized octaves.   |
+
+---
+
+### `DoublePerlinNoise`
+
+Two parallel `OctaveNoise` stacks whose outputs are combined, matching Minecraft's 1.18+ climate noise implementation.
+
+```c
+typedef struct DoublePerlinNoise {
+    double      amplitude; // combined amplitude scaling
+    OctaveNoise octA;
+    OctaveNoise octB;
+} DoublePerlinNoise;
+```
+
+| Field       | Type          | Description                             |
+| ----------- | ------------- | --------------------------------------- |
+| `amplitude` | `double`      | Combined scaling factor.                |
+| `octA`      | `OctaveNoise` | First octave stack.                     |
+| `octB`      | `OctaveNoise` | Second octave stack.                    |
+
+## Perlin noise functions
+
+### `perlinInit`
+
+```c
+void perlinInit(PerlinNoise *noise, uint64_t *seed);
+```
+
+Initializes a `PerlinNoise` instance using a Java Random `seed`. Advances the seed state by the number of calls required for initialization.
+
+<ParamField path="noise" type="PerlinNoise *" required>
+  Pointer to the `PerlinNoise` struct to initialize.
+</ParamField>
+
+<ParamField path="seed" type="uint64_t *" required>
+  Pointer to a 48-bit Java Random seed. The seed is advanced in place.
+</ParamField>
+
+---
+
+### `xPerlinInit`
+
+```c
+void xPerlinInit(PerlinNoise *noise, Xoroshiro *xr);
+```
+
+Initializes a `PerlinNoise` instance using an Xoroshiro 128 RNG, as used in MC 1.18+.
+
+<ParamField path="noise" type="PerlinNoise *" required>
+  Pointer to the `PerlinNoise` struct to initialize.
+</ParamField>
+
+<ParamField path="xr" type="Xoroshiro *" required>
+  Pointer to an initialized `Xoroshiro` state. Advanced in place.
+</ParamField>
+
+---
+
+### `samplePerlin`
+
+```c
+double samplePerlin(const PerlinNoise *noise, double x, double y, double z,
+    double yamp, double ymin);
+```
+
+Samples Perlin noise at position `(x, y, z)`. The `yamp` and `ymin` arguments control vertical amplitude clamping used internally by the terrain system; pass `0` for both to get a plain sample.
+
+<ParamField path="noise" type="const PerlinNoise *" required>
+  Initialized `PerlinNoise`.
+</ParamField>
+
+<ParamField path="x" type="double" required>
+  X coordinate.
+</ParamField>
+
+<ParamField path="y" type="double" required>
+  Y coordinate.
+</ParamField>
+
+<ParamField path="z" type="double" required>
+  Z coordinate.
+</ParamField>
+
+<ParamField path="yamp" type="double">
+  Vertical amplitude parameter. Pass `0` to ignore.
+</ParamField>
+
+<ParamField path="ymin" type="double">
+  Vertical minimum parameter. Pass `0` to ignore.
+</ParamField>
+
+---
+
+### `sampleSimplex2D`
+
+```c
+double sampleSimplex2D(const PerlinNoise *noise, double x, double y);
+```
+
+Samples 2D simplex noise at `(x, y)` using the permutation table of `noise`.
+
+<ParamField path="noise" type="const PerlinNoise *" required>
+  Initialized `PerlinNoise`.
+</ParamField>
+
+<ParamField path="x" type="double" required>
+  X coordinate.
+</ParamField>
+
+<ParamField path="y" type="double" required>
+  Y coordinate.
+</ParamField>
+
+## Octave noise functions
+
+### `octaveInit`
+
+```c
+void octaveInit(OctaveNoise *noise, uint64_t *seed, PerlinNoise *octaves,
+    int omin, int len);
+```
+
+Initializes an `OctaveNoise` by calling `perlinInit` on `len` consecutive octaves. `omin` is the index of the lowest-frequency octave.
+
+<ParamField path="noise" type="OctaveNoise *" required>
+  Pointer to the `OctaveNoise` struct to initialize.
+</ParamField>
+
+<ParamField path="seed" type="uint64_t *" required>
+  Java Random seed, advanced in place.
+</ParamField>
+
+<ParamField path="octaves" type="PerlinNoise *" required>
+  Pre-allocated array of at least `len` `PerlinNoise` elements.
+</ParamField>
+
+<ParamField path="omin" type="int" required>
+  Minimum octave index (lowest frequency).
+</ParamField>
+
+<ParamField path="len" type="int" required>
+  Number of octaves to initialize.
+</ParamField>
+
+---
+
+### `xOctaveInit`
+
+```c
+int xOctaveInit(OctaveNoise *noise, Xoroshiro *xr, PerlinNoise *octaves,
+    const double *amplitudes, int omin, int len, int nmax);
+```
+
+Initializes an `OctaveNoise` using an Xoroshiro RNG with per-octave amplitude values from the `amplitudes` array (length `len`). Used for MC 1.18+ climate noise. Returns the number of active octaves on success.
+
+<ParamField path="noise" type="OctaveNoise *" required>
+  Pointer to the `OctaveNoise` struct to initialize.
+</ParamField>
+
+<ParamField path="xr" type="Xoroshiro *" required>
+  Xoroshiro state, advanced in place.
+</ParamField>
+
+<ParamField path="octaves" type="PerlinNoise *" required>
+  Pre-allocated array of at least `nmax` `PerlinNoise` elements.
+</ParamField>
+
+<ParamField path="amplitudes" type="const double *" required>
+  Array of `len` amplitude values, one per octave. Octaves with amplitude `0` are skipped.
+</ParamField>
+
+<ParamField path="omin" type="int" required>
+  Minimum octave index.
+</ParamField>
+
+<ParamField path="len" type="int" required>
+  Length of the `amplitudes` array.
+</ParamField>
+
+<ParamField path="nmax" type="int" required>
+  Maximum number of octaves in the `octaves` buffer.
+</ParamField>
+
+---
+
+### `octaveInitBeta`
+
+```c
+void octaveInitBeta(OctaveNoise *noise, uint64_t *seed, PerlinNoise *octaves,
+    int octcnt, double lac, double lacMul, double persist, double persistMul);
+```
+
+Initializes an `OctaveNoise` for Beta-era terrain generation with explicit lacunarity and persistence multipliers.
+
+<ParamField path="noise" type="OctaveNoise *" required>
+  Pointer to the `OctaveNoise` struct to initialize.
+</ParamField>
+
+<ParamField path="seed" type="uint64_t *" required>
+  Java Random seed, advanced in place.
+</ParamField>
+
+<ParamField path="octaves" type="PerlinNoise *" required>
+  Pre-allocated array of at least `octcnt` elements.
+</ParamField>
+
+<ParamField path="octcnt" type="int" required>
+  Number of octaves.
+</ParamField>
+
+<ParamField path="lac" type="double" required>
+  Starting lacunarity (frequency scale).
+</ParamField>
+
+<ParamField path="lacMul" type="double" required>
+  Lacunarity multiplier applied per octave.
+</ParamField>
+
+<ParamField path="persist" type="double" required>
+  Starting persistence (amplitude scale).
+</ParamField>
+
+<ParamField path="persistMul" type="double" required>
+  Persistence multiplier applied per octave.
+</ParamField>
+
+---
+
+### `sampleOctave`
+
+```c
+double sampleOctave(const OctaveNoise *noise, double x, double y, double z);
+```
+
+Returns the combined sample from all octaves at `(x, y, z)`.
+
+<ParamField path="noise" type="const OctaveNoise *" required>
+  Initialized `OctaveNoise`.
+</ParamField>
+
+<ParamField path="x" type="double" required>X coordinate.</ParamField>
+<ParamField path="y" type="double" required>Y coordinate.</ParamField>
+<ParamField path="z" type="double" required>Z coordinate.</ParamField>
+
+---
+
+### `sampleOctaveAmp`
+
+```c
+double sampleOctaveAmp(const OctaveNoise *noise, double x, double y, double z,
+    double yamp, double ymin, int ydefault);
+```
+
+Samples all octaves with vertical amplitude clamping, as used in Overworld terrain generation.
+
+<ParamField path="noise" type="const OctaveNoise *" required>
+  Initialized `OctaveNoise`.
+</ParamField>
+
+<ParamField path="x" type="double" required>X coordinate.</ParamField>
+<ParamField path="y" type="double" required>Y coordinate.</ParamField>
+<ParamField path="z" type="double" required>Z coordinate.</ParamField>
+
+<ParamField path="yamp" type="double" required>
+  Vertical amplitude clamp value.
+</ParamField>
+
+<ParamField path="ymin" type="double" required>
+  Vertical minimum clamp value.
+</ParamField>
+
+<ParamField path="ydefault" type="int" required>
+  Default Y behavior flag.
+</ParamField>
+
+---
+
+### `sampleOctave2D`
+
+```c
+double sampleOctave2D(const OctaveNoise *noise, double x, double z);
+```
+
+Returns the combined 2D octave sample at `(x, z)`.
+
+<ParamField path="noise" type="const OctaveNoise *" required>
+  Initialized `OctaveNoise`.
+</ParamField>
+
+<ParamField path="x" type="double" required>X coordinate.</ParamField>
+<ParamField path="z" type="double" required>Z coordinate.</ParamField>
+
+## Double Perlin noise functions
+
+### `doublePerlinInit`
+
+```c
+void doublePerlinInit(DoublePerlinNoise *noise, uint64_t *seed,
+    PerlinNoise *octavesA, PerlinNoise *octavesB, int omin, int len);
+```
+
+Initializes a `DoublePerlinNoise` using Java Random, allocating two `OctaveNoise` stacks `octA` and `octB` from separate pre-allocated arrays.
+
+<ParamField path="noise" type="DoublePerlinNoise *" required>
+  Pointer to the `DoublePerlinNoise` struct to initialize.
+</ParamField>
+
+<ParamField path="seed" type="uint64_t *" required>
+  Java Random seed, advanced in place.
+</ParamField>
+
+<ParamField path="octavesA" type="PerlinNoise *" required>
+  Pre-allocated array for the first octave stack.
+</ParamField>
+
+<ParamField path="octavesB" type="PerlinNoise *" required>
+  Pre-allocated array for the second octave stack.
+</ParamField>
+
+<ParamField path="omin" type="int" required>
+  Minimum octave index for both stacks.
+</ParamField>
+
+<ParamField path="len" type="int" required>
+  Number of octaves in each stack.
+</ParamField>
+
+---
+
+### `xDoublePerlinInit`
+
+```c
+int xDoublePerlinInit(DoublePerlinNoise *noise, Xoroshiro *xr,
+    PerlinNoise *octaves, const double *amplitudes, int omin, int len, int nmax);
+```
+
+Initializes a `DoublePerlinNoise` using Xoroshiro and per-octave amplitudes. Used for MC 1.18+ climate parameters. Returns the total number of active octaves.
+
+<ParamField path="noise" type="DoublePerlinNoise *" required>
+  Pointer to the `DoublePerlinNoise` struct to initialize.
+</ParamField>
+
+<ParamField path="xr" type="Xoroshiro *" required>
+  Xoroshiro state, advanced in place.
+</ParamField>
+
+<ParamField path="octaves" type="PerlinNoise *" required>
+  Pre-allocated array for both stacks (must hold at least `2 * nmax` elements).
+</ParamField>
+
+<ParamField path="amplitudes" type="const double *" required>
+  Array of `len` amplitude values.
+</ParamField>
+
+<ParamField path="omin" type="int" required>
+  Minimum octave index.
+</ParamField>
+
+<ParamField path="len" type="int" required>
+  Length of the `amplitudes` array.
+</ParamField>
+
+<ParamField path="nmax" type="int" required>
+  Maximum octaves per stack.
+</ParamField>
+
+---
+
+### `sampleDoublePerlin`
+
+```c
+double sampleDoublePerlin(const DoublePerlinNoise *noise,
+    double x, double y, double z);
+```
+
+Returns the combined sample from both octave stacks at `(x, y, z)`, scaled by the noise amplitude.
+
+<ParamField path="noise" type="const DoublePerlinNoise *" required>
+  Initialized `DoublePerlinNoise`.
+</ParamField>
+
+<ParamField path="x" type="double" required>X coordinate.</ParamField>
+<ParamField path="y" type="double" required>Y coordinate.</ParamField>
+<ParamField path="z" type="double" required>Z coordinate.</ParamField>
+
+## Usage example
+
+```c
+#include "noise.h"
+
+// Sample a single DoublePerlinNoise using Java Random
+void example_sample(void)
+{
+    uint64_t seed = 12345ULL;
+    setSeed(&seed, seed);
+
+    PerlinNoise octA[4], octB[4];
+    DoublePerlinNoise dpn;
+    doublePerlinInit(&dpn, &seed, octA, octB, -3, 4);
+
+    double val = sampleDoublePerlin(&dpn, 100.0, 64.0, 200.0);
+}
+```

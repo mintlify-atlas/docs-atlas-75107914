@@ -1,0 +1,281 @@
+---
+title: "Noise and layer systems: PerlinNoise to BiomeNoise"
+description: "Explore PerlinNoise, OctaveNoise, DoublePerlinNoise, the 1.17 layer stack, and the 1.18+ climate noise system used to generate Minecraft biomes."
+---
+
+cubiomes implements two parallel generation systems to cover the full range of supported Minecraft versions. Versions up to MC 1.17 use a hierarchical layer stack that progressively refines a continent map through dozens of transformation steps. Versions 1.18 and later use a set of continuous noise functions whose outputs are mapped to biomes through a multi-parameter climate space. Both systems are built on the same low-level noise primitives defined in `noise.h`.
+
+## Noise primitives
+
+### PerlinNoise
+
+`PerlinNoise` is the foundational building block. It holds a 257-entry permutation table and three offset values that together define a single Perlin noise function seeded from either a Java-style LCG or a Xoroshiro state.
+
+```c
+// noise.h (excerpt)
+STRUCT(PerlinNoise)
+{
+    uint8_t d[256+1];
+    uint8_t h2;
+    double a, b, c;
+    double amplitude;
+    double lacunarity;
+    double d2;
+    double t2;
+};
+
+void perlinInit(PerlinNoise *noise, uint64_t *seed);
+void xPerlinInit(PerlinNoise *noise, Xoroshiro *xr);
+
+double samplePerlin(const PerlinNoise *noise, double x, double y, double z,
+        double yamp, double ymin);
+```
+
+Use `perlinInit` for versions up to 1.17 (Java LCG seed) and `xPerlinInit` for 1.18+ (Xoroshiro seed). Pass `yamp = 0` and `ymin = 0` to `samplePerlin` when you only need 2D noise.
+
+### OctaveNoise
+
+`OctaveNoise` combines multiple `PerlinNoise` instances — called octaves — at geometrically increasing frequencies. Higher octave counts add finer detail at the cost of more computation.
+
+```c
+// noise.h (excerpt)
+STRUCT(OctaveNoise)
+{
+    int octcnt;
+    PerlinNoise *octaves;
+};
+
+void octaveInit(OctaveNoise *noise, uint64_t *seed, PerlinNoise *octaves,
+        int omin, int len);
+int xOctaveInit(OctaveNoise *noise, Xoroshiro *xr, PerlinNoise *octaves,
+        const double *amplitudes, int omin, int len, int nmax);
+
+double sampleOctave(const OctaveNoise *noise, double x, double y, double z);
+double sampleOctave2D(const OctaveNoise *noise, double x, double z);
+```
+
+`octaveInit` takes `omin` (the starting octave index, a non-positive integer) and `len` (number of octaves). `xOctaveInit` additionally accepts an `amplitudes` array and a `nmax` limit for partial initialization.
+
+### DoublePerlinNoise
+
+`DoublePerlinNoise` is the highest-level noise type. It holds two `OctaveNoise` instances (A and B) and combines them with a shared amplitude. This is the type used for every climate parameter in 1.18+ Overworld generation.
+
+```c
+// noise.h (excerpt)
+STRUCT(DoublePerlinNoise)
+{
+    double amplitude;
+    OctaveNoise octA;
+    OctaveNoise octB;
+};
+
+void doublePerlinInit(DoublePerlinNoise *noise, uint64_t *seed,
+        PerlinNoise *octavesA, PerlinNoise *octavesB, int omin, int len);
+int xDoublePerlinInit(DoublePerlinNoise *noise, Xoroshiro *xr,
+        PerlinNoise *octaves, const double *amplitudes, int omin, int len, int nmax);
+
+double sampleDoublePerlin(const DoublePerlinNoise *noise,
+        double x, double y, double z);
+```
+
+Use `xDoublePerlinInit` for 1.18+ where the Xoroshiro RNG is active.
+
+## 1.18+ Overworld: BiomeNoise
+
+`BiomeNoise` holds one `DoublePerlinNoise` per climate parameter plus the spline data used to map climate values to terrain shape.
+
+```c
+// biomenoise.h (excerpt)
+enum {
+    NP_TEMPERATURE      = 0,
+    NP_HUMIDITY         = 1,
+    NP_CONTINENTALNESS  = 2,
+    NP_EROSION          = 3,
+    NP_SHIFT            = 4, NP_DEPTH = NP_SHIFT,
+    NP_WEIRDNESS        = 5,
+    NP_MAX
+};
+
+STRUCT(BiomeNoise)
+{
+    DoublePerlinNoise climate[NP_MAX];
+    PerlinNoise oct[2*23]; // octave buffer for all climate noises
+    Spline *sp;
+    SplineStack ss;
+    int nptype;
+    int mc;
+};
+```
+
+To sample a single climate parameter without running full biome generation, use `setClimateParaSeed` and `sampleClimatePara`:
+
+```c
+BiomeNoise bn;
+initBiomeNoise(&bn, MC_1_18);
+setClimateParaSeed(&bn, seed, /*large=*/0, NP_TEMPERATURE, /*nmax=*/-1);
+
+int64_t np;
+double temp = sampleClimatePara(&bn, &np, /*x=*/0.0, /*z=*/0.0);
+```
+
+The `nmax` parameter limits the number of octaves initialized. Pass `-1` for a full, accurate initialization.
+
+### Beta Overworld: BiomeNoiseBeta
+
+For Alpha 1.2 through Beta 1.7, cubiomes uses `BiomeNoiseBeta`, which holds three `OctaveNoise` instances for temperature, humidity, and a third climate parameter.
+
+```c
+// biomenoise.h (excerpt)
+STRUCT(BiomeNoiseBeta)
+{
+    OctaveNoise climate[3];
+    PerlinNoise oct[10];
+    int nptype;
+    int mc;
+};
+```
+
+Initialize it with `setBetaBiomeSeed` and sample with `sampleBiomeNoiseBeta`. Conversion from climate values to biome IDs uses `getOldBetaBiome(float t, float h)`.
+
+## Nether and End noise
+
+### NetherNoise
+
+`NetherNoise` powers 3D Nether biome generation from MC 1.16 onward. It holds `DoublePerlinNoise` for temperature and humidity (altitude and weirdness do not affect Nether biomes).
+
+```c
+// biomenoise.h (excerpt)
+STRUCT(NetherNoise)
+{
+    DoublePerlinNoise temperature;
+    DoublePerlinNoise humidity;
+    PerlinNoise oct[8];
+};
+
+void setNetherSeed(NetherNoise *nn, uint64_t seed);
+int getNetherBiome(const NetherNoise *nn, int x, int y, int z, float *ndel);
+int mapNether2D(const NetherNoise *nn, int *out, int x, int z, int w, int h);
+```
+
+The `ndel` output from `getNetherBiome` is an optional noise delta used for optimization; pass `NULL` to ignore it.
+
+### EndNoise
+
+`EndNoise` uses simplex noise that varies only at 1:16 chunk resolution, making End biome generation much cheaper than Overworld.
+
+```c
+// biomenoise.h (excerpt)
+STRUCT(EndNoise)
+{
+    PerlinNoise perlin;
+    int mc;
+};
+
+void setEndSeed(EndNoise *en, int mc, uint64_t seed);
+int mapEndBiome(const EndNoise *en, int *out, int x, int z, int w, int h);
+```
+
+## 1.17 and earlier: the layer stack
+
+### LayerStack and LayerId
+
+For MC 1.0 through 1.17, the `LayerStack` contains an array of `Layer` objects indexed by the `LayerId` enum. Each layer has a scale, a generation function pointer (`mapfunc_t`), and pointers to parent layers.
+
+```c
+// layers.h (excerpt)
+STRUCT(LayerStack)
+{
+    Layer layers[L_NUM];
+    Layer *entry_1;   // 1:1 scale  [L_VORONOI_1]
+    Layer *entry_4;   // 1:4 scale  [L_RIVER_MIX_4 | L_OCEAN_MIX_4]
+    Layer *entry_16;  // 1:16 scale [L_SHORE_16]
+    Layer *entry_64;  // 1:64 scale [L_HILLS_64 | L_SUNFLOWER_64]
+    Layer *entry_256; // 1:256 scale [L_BIOME_256 | L_BAMBOO_256]
+    PerlinNoise oceanRnd;
+};
+```
+
+### Scale hierarchy
+
+The layer IDs trace the pipeline from coarsest to finest resolution:
+
+| Layer constant | Scale | Role |
+|---|---|---|
+| `L_CONTINENT_4096` | 1:4096 | Seeds land/ocean distribution |
+| `L_BIOME_256` | 1:256 | Assigns raw biome categories |
+| `L_HILLS_64` | 1:64 | Adds hill and mutation variants |
+| `L_SHORE_16` | 1:16 | Computes beach and shore transitions |
+| `L_RIVER_MIX_4` | 1:4 | Blends river channels into biome map |
+| `L_OCEAN_MIX_4` | 1:4 | Overlays ocean temperature variants (1.13+) |
+| `L_VORONOI_1` | 1:1 | Voronoi zoom to block-level resolution |
+
+Zoom layers (`L_ZOOM_*`) sit between each major step, doubling the resolution by interpolating cells. Large Biomes worlds add two extra zoom passes after the biome assignment step.
+
+<Note>
+Layer indices in the enum are contiguous integers. Do not hard-code numeric values — use the named `LayerId` constants to index into `LayerStack.layers[]`.
+</Note>
+
+### Accessing a layer directly
+
+For layered generation you can bypass `genBiomes()` and call `genArea()` on a specific layer entry point:
+
+```c
+Generator g;
+setupGenerator(&g, MC_1_17, 0);
+applySeed(&g, DIM_OVERWORLD, seed);
+
+// Get a 64x64 area at 1:4 scale
+const Layer *layer = getLayerForScale(&g, 4);
+int buf[64 * 64];
+genArea(layer, buf, x >> 2, z >> 2, 64, 64);
+// buf is indexed as buf[z_idx * 64 + x_idx]
+```
+
+`getLayerForScale` accepts `0, 1, 4, 16, 64, 256`. A scale of `0` returns the custom entry layer `g.entry`.
+
+## SurfaceNoise and approximate height
+
+`SurfaceNoise` (from `biomenoise.h`) models the 3D terrain density noise used to compute approximate surface heights. You do not need it for biome generation, but you can use it with `mapApproxHeight()` to estimate terrain elevation alongside biome data:
+
+```c
+// biomenoise.h / generator.h (excerpt)
+STRUCT(SurfaceNoise)
+{
+    double xzScale, yScale;
+    double xzFactor, yFactor;
+    OctaveNoise octmin;
+    OctaveNoise octmax;
+    OctaveNoise octmain;
+    OctaveNoise octsurf;
+    OctaveNoise octdepth;
+    PerlinNoise oct[16+16+8+4+16];
+};
+
+void initSurfaceNoise(SurfaceNoise *sn, int dim, uint64_t seed);
+
+int mapApproxHeight(float *y, int *ids, const Generator *g,
+    const SurfaceNoise *sn, int x, int z, int w, int h);
+```
+
+Initialize `SurfaceNoise` with `initSurfaceNoise` using the same seed as the generator. The horizontal scale for `mapApproxHeight` is always 1:4.
+
+<AccordionGroup>
+  <Accordion title="Why does BiomeNoise have a single oct[] buffer for all climate noises?">
+    All six `DoublePerlinNoise` instances share the `oct[2*23]` buffer inside `BiomeNoise`. The total number of Perlin octaves across both OctaveNoise halves of all six climate noises fits within 46 slots. This avoids separate heap allocations and keeps the entire noise state contiguous in memory.
+  </Accordion>
+  <Accordion title="Can I initialize only some octaves for faster sampling?">
+    Yes. The `nmax` parameter in `xOctaveInit` and `xDoublePerlinInit` limits initialization to the most significant octaves. Lower values give faster but less accurate results. Pass `-1` for a complete initialization that matches the game exactly.
+  </Accordion>
+  <Accordion title="What is the SAMPLE_NO_SHIFT flag in sampleBiomeNoise?">
+    Passing `SAMPLE_NO_SHIFT` to `sampleBiomeNoise` skips the local coordinate distortion step that uses the shift/depth noise. This can speed up sampling when you only need approximate climate values and do not need per-block positional jitter.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Biome generation" icon="map" href="/concepts/biome-generation">
+    Learn how Range and genBiomes tie all these noise systems together.
+  </Card>
+  <Card title="Random number generation" icon="shuffle" href="/concepts/rng">
+    Understand the Java LCG and Xoroshiro RNG that seed all noise functions.
+  </Card>
+</CardGroup>

@@ -1,0 +1,226 @@
+---
+title: 'Filter Minecraft seeds by their biome requirements'
+description: 'Use BiomeFilter and checkForBiomes to reject seeds that cannot contain required biomes, with optional approximate mode for faster throughput.'
+---
+
+Checking whether a seed contains specific biomes is the most common bottleneck in large-scale seed searches. cubiomes offers a layered filtering approach built around `BiomeFilter` and `checkForBiomes`: rather than generating a full biome map and scanning it, the library works through progressively finer generation layers and aborts as soon as a seed provably cannot satisfy your requirements. For versions up to 1.17, this can eliminate the vast majority of seeds before reaching the expensive final layers.
+
+## The BiomeFilter struct
+
+`BiomeFilter` encodes the biome requirements as a set of bitfields — one bit per biome ID — distributed across the generation layers at which each biome first appears (1:1024 temperature, 1:256 ocean/major, 1:64 edge/rare, 1:16 shore, 1:4 river/mix). The library checks layers from coarsest to finest and aborts the check as soon as any requirement is provably unmet.
+
+```c
+STRUCT(BiomeFilter)
+{
+    // bitfields for biomes required at their respecive layers
+    uint64_t tempsToFind; // Special (1:1024)
+    uint64_t otempToFind; // OceanTemp (1:256)
+    uint64_t majorToFind; // Biome (1:256)
+    uint64_t edgesToFind; // Edge (1:64) [mod64: as special case for bamboo]
+    // bitfields for biomes to find at RareBiome(1:64), Shore(1:16) and Mix(1:4)
+    // layers for (biomeID < 64) and modified (biomeID >= 128 && biomeID < 192)
+    uint64_t raresToFind, raresToFindM;
+    uint64_t shoreToFind, shoreToFindM;
+    uint64_t riverToFind, riverToFindM;
+    uint64_t oceanToFind; // all required ocean types
+
+    int specialCnt; // number of special temperature categories required
+
+    uint32_t flags;
+
+    // the biome exclusion aborts generation when the area contains no biomes
+    // that can generate the excluded biomes
+    uint64_t tempsToExcl;
+    uint64_t majorToExcl;
+    // ... (additional exclusion fields)
+};
+```
+
+Do not populate this struct by hand. Always use `setupBiomeFilter` so the library correctly assigns each biome to its earliest detection layer and computes derived fields such as `specialCnt`.
+
+## Setting up the filter
+
+```c
+void setupBiomeFilter(
+    BiomeFilter *bf,
+    int mc, uint32_t flags,
+    const int *required, int requiredLen,
+    const int *excluded, int excludedLen,
+    const int *matchany, int matchanyLen);
+```
+
+| Parameter | Description |
+|---|---|
+| `bf` | Pointer to a `BiomeFilter` to initialise |
+| `mc` | Minecraft version constant |
+| `flags` | Optional flags (see below) |
+| `required` | Array of biome IDs that must all be present |
+| `requiredLen` | Length of `required`; pass 0 with `NULL` for none |
+| `excluded` | Array of biome IDs that must not be present |
+| `excludedLen` | Length of `excluded` |
+| `matchany` | Array of biome IDs where at least one must be present |
+| `matchanyLen` | Length of `matchany` |
+
+A biome must not appear in more than one of the three lists. The `matchany` list is satisfied when the search area contains at least one of the listed biomes.
+
+## The BF_APPROX flag
+
+Passing `BF_APPROX` as the flags value enables aggressive early-exit heuristics that trade accuracy for speed:
+
+```c
+enum
+{
+    BF_APPROX       = 0x01, // enabled aggresive filtering, trading accuracy
+    BF_FORCED_OCEAN = FORCE_OCEAN_VARIANTS,
+};
+```
+
+With `BF_APPROX` set, `checkForBiomes` may return 0 (fail) for some seeds that would actually pass a full generation check — that is, it can produce **false negatives**. Use this flag during an initial coarse pass over billions of seeds, then re-verify surviving candidates without the flag.
+
+## Checking seeds with checkForBiomes
+
+```c
+int checkForBiomes(
+        Generator         * g,
+        int               * cache,
+        Range               r,
+        int                 dim,
+        uint64_t            seed,
+        const BiomeFilter * filter,
+        volatile char     * stop
+        );
+```
+
+The function returns one of three values:
+
+| Return value | Meaning |
+|---|---|
+| `0` | Failed — the seed provably cannot satisfy the filter |
+| `1` | OK — the area was fully generated and all requirements are met |
+| `2` | OK — generation was not completed, but enough layers passed to confirm the requirements |
+
+A return of `2` is common when `BF_APPROX` is active or when requirements are satisfied before the finest layers run. The `cache` buffer, if non-null, receives the biome array when generation completes (return value `1`); its contents are undefined for return value `2`.
+
+<Note>
+`checkForBiomes` internally calls `applySeed` on the generator, so you do not need to call it yourself before each seed. The generator is left in a partially initialised state after the call; call `applySeed` before using it for anything else.
+</Note>
+
+```c
+// Example: require mushroom_fields and dark_forest within 2048 blocks of origin
+#include "finders.h"
+#include <stdio.h>
+
+int main()
+{
+    int mc = MC_1_18;
+    Generator g;
+    setupGenerator(&g, mc, 0);
+
+    int req[] = { mushroom_fields, dark_forest };
+    BiomeFilter bf;
+    setupBiomeFilter(&bf, mc, 0, req, 2, NULL, 0, NULL, 0);
+
+    Range r;
+    r.scale = 4;
+    r.x = -512; r.z = -512;
+    r.sx = 1024; r.sz = 1024;
+    r.y = 15;   r.sy = 1;
+
+    uint64_t seed;
+    for (seed = 0; seed < 1000000; seed++)
+    {
+        if (checkForBiomes(&g, NULL, r, DIM_OVERWORLD, seed, &bf, NULL))
+            printf("Seed %" PRId64 " passes\n", (int64_t) seed);
+    }
+    return 0;
+}
+```
+
+## Monte Carlo biome sampling
+
+For situations where you want statistical confidence that a biome covers a minimum fraction of an area — rather than requiring it to be present at all — use `monteCarloBiomes`:
+
+```c
+int monteCarloBiomes(
+        Generator         * g,
+        Range               r,
+        uint64_t          * rng,
+        double              coverage,
+        double              confidence,
+        int (*eval)(Generator *g, int scale, int x, int y, int z, void *data),
+        void              * data
+        );
+```
+
+| Parameter | Description |
+|---|---|
+| `g` | Biome generator with seed already applied |
+| `r` | Range to sample |
+| `rng` | Random seed controlling the sampling positions |
+| `coverage` | Minimum fraction of samples that must evaluate as success, in `[0, 1]` |
+| `confidence` | Statistical confidence level, in `(0, 1)` — e.g. `0.95` |
+| `eval` | Per-position callback returning `1` (success), `0` (fail), `-1` (skip), or any other value to abort |
+| `data` | Opaque pointer forwarded to `eval` |
+
+The function returns non-zero if the sampled area meets the coverage threshold at the given confidence level. It draws progressively more samples until it can make a confident determination in either direction, making it much faster than exhaustively sampling every cell in large areas.
+
+## Querying available biomes
+
+Two functions let you discover which biomes can exist for a given version and layer, without testing any particular seed.
+
+### getAvailableBiomes
+
+```c
+void getAvailableBiomes(uint64_t *mL, uint64_t *mM, int layerId, int mc, uint32_t flags);
+```
+
+Writes two bitfields — `mL` for IDs 0–63 and `mM` for IDs 128–191 — indicating every biome that can generate at that layer for the given version. Unlike `canBiomeGenerate`, this also supports `L_OCEAN_TEMP_256` and 1.18+ where the layer ID is ignored.
+
+### canBiomeGenerate
+
+```c
+int canBiomeGenerate(int layerId, int mc, uint32_t flags, int biomeID);
+```
+
+Returns non-zero if the specific `biomeID` can appear at the given `layerId` for the target version. Supported layer IDs include:
+
+```
+L_BIOME_256, L_BAMBOO_256, L_BIOME_EDGE_64, L_HILLS_64, L_SUNFLOWER_64,
+L_SHORE_16, L_RIVER_MIX_4, L_OCEAN_MIX_4, L_VORONOI_1
+```
+
+Use `canBiomeGenerate` to validate your `BiomeFilter` before starting a long search — if a required biome cannot generate in the target version, your filter will never pass.
+
+<Tip>
+Call `getAvailableBiomes` once at startup and intersect the result with your required biome set. If any required biome is absent from the result, the search would find zero seeds — fail fast and report the configuration error instead of running for hours.
+</Tip>
+
+## Recommended filtering pipeline
+
+<Steps>
+  <Step title="Build the BiomeFilter once">
+    Call `setupBiomeFilter` with your required, excluded, and matchany lists. Reuse the same `BiomeFilter` across all seeds in a run — it does not hold any per-seed state.
+  </Step>
+  <Step title="Coarse pass with BF_APPROX">
+    Run `checkForBiomes` with `BF_APPROX` set and a coarse `Range` (e.g. `scale=16` or `scale=64`) over your candidate seed range. Collect seeds that return non-zero.
+  </Step>
+  <Step title="Fine pass without BF_APPROX">
+    Re-run `checkForBiomes` on surviving seeds with `BF_APPROX` cleared and a finer `Range` (e.g. `scale=4`). This eliminates the false negatives introduced in step 2.
+  </Step>
+  <Step title="Full generation for confirmed seeds">
+    For seeds that survive both passes, call `genBiomes` or individual `getBiomeAt` queries to perform any precise position checks your application requires.
+  </Step>
+</Steps>
+
+<Warning>
+`checkForBiomes` is designed for Overworld generation up to 1.17 where the layer stack allows incremental early-exit filtering. For 1.18+ noise-based generation, the function still works but the multi-layer early-exit optimisation is less effective because the noise generator does not have discrete layers in the same sense.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="Generate biomes for an area" icon="map" href="/guides/biome-area-generation">
+    Use `genBiomes` with a `Range` to generate a full biome map after your seeds pass the filter.
+  </Card>
+  <Card title="Find structure positions" icon="map-pin" href="/guides/structure-finding">
+    Combine biome filtering with structure searches to find seeds that satisfy both biome and structure requirements.
+  </Card>
+</CardGroup>

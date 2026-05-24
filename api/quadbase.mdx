@@ -1,0 +1,219 @@
+---
+title: "Quad-base search API reference"
+description: "Functions and constants for finding 48-bit quad-structure seed bases in cubiomes, including isQuadBase, searchAll48, and constellation helpers."
+---
+
+The quad-base API lets you enumerate all 48-bit seeds where four structures in adjacent regions cluster tightly enough to be farmed from a single AFK position. The key insight is that structure positions depend only on the lower 48 bits of the world seed, and certain lower-20-bit constellations dramatically reduce the search space to around 2^28 candidates.
+
+## Constellation constants
+
+Four pre-computed arrays of lower-20-bit values identify valid quad-structure constellations. Subtract the structure salt before use.
+
+```c
+// Only the very best constellations (3 entries)
+static const uint64_t low20QuadIdeal[] = { 0x43f18, 0xc751a, 0xf520a, 0 };
+
+// Classic constellations (4 entries)
+static const uint64_t low20QuadClassic[] = { 0x43f18, 0x79a0a, 0xc751a, 0xf520a, 0 };
+
+// Normal quad-witch-hut (fall-damage farm compatible)
+static const uint64_t low20QuadHutNormal[] = {
+    0x43f18, 0x65118, 0x75618, 0x79a0a, 0x89718, 0x9371a, 0xa5a08, 0xb5e18,
+    0xc751a, 0xf520a, 0
+};
+
+// Any valid quad-witch-hut constellation
+static const uint64_t low20QuadHutBarely[] = {
+    0x1272d, 0x17908, 0x367b9, 0x43f18, 0x487c9, 0x487ce, 0x50aa7, 0x647b5,
+    0x65118, 0x75618, 0x79a0a, 0x89718, 0x9371a, 0x967ec, 0xa3d0a, 0xa5918,
+    0xa591d, 0xa5a08, 0xb5e18, 0xc6749, 0xc6d9a, 0xc751a, 0xd7108, 0xd717a,
+    0xe2739, 0xe9918, 0xee1c4, 0xf520a, 0
+};
+```
+
+### Constellation categories
+
+```c
+enum { CST_NONE, CST_IDEAL, CST_CLASSIC, CST_NORMAL, CST_BARELY };
+int getQuadHutCst(uint64_t low20);
+```
+
+Returns the constellation category for a given lower-20-bit value.
+
+## isQuadBase
+
+```c
+float isQuadBase(const StructureConfig sconf, uint64_t seed, int radius);
+```
+
+Checks whether the lower 48 bits of `seed` qualify as a quad-base — meaning four structures in regions (0,0)–(1,1) all fall within `radius` blocks of a single point. Returns the enclosing sphere radius on success (smaller is better), or `0` if not a quad-base.
+
+This is a dispatcher that calls the appropriate variant below based on `sconf.structType`.
+
+<ParamField path="sconf" type="StructureConfig">
+  Structure configuration obtained from `getStructureConfig()`.
+</ParamField>
+<ParamField path="seed" type="uint64_t">
+  World seed. Only the lower 48 bits are used.
+</ParamField>
+<ParamField path="radius" type="int">
+  Maximum enclosing sphere radius in blocks. Use `128` for quad-witch-huts.
+</ParamField>
+
+## Variant functions
+
+More specific checkers that can be faster for particular structure sizes and region configurations.
+
+```c
+// Optimized for regionSize=32, chunkRange=24, radius=128
+float isQuadBaseFeature24Classic(const StructureConfig sconf, uint64_t seed);
+
+float isQuadBaseFeature24(const StructureConfig sconf, uint64_t seed,
+    int ax, int ay, int az);
+
+// General small-structure checker
+float isQuadBaseFeature(const StructureConfig sconf, uint64_t seed,
+    int ax, int ay, int az, int radius);
+
+// For large structures (Monument, Mansion)
+float isQuadBaseLarge(const StructureConfig sconf, uint64_t seed,
+    int ax, int ay, int az, int radius);
+```
+
+`ax`, `ay`, `az` are the structure dimensions including any farm clearance needed (e.g., `7+1, 7+1, 9+1` for a witch hut).
+
+## searchAll48
+
+Searches all 2^48 seeds (or a restricted lower-bit subset) using a custom check function, with optional multi-threading and file output.
+
+```c
+int searchAll48(
+    uint64_t **seedbuf,
+    uint64_t  *buflen,
+    const char *path,
+    int         threads,
+    const uint64_t *lowBits,
+    int         lowBitN,
+    int (*check)(uint64_t s48, void *data),
+    void       *data,
+    volatile char *stop
+);
+```
+
+Returns `0` on success.
+
+<ParamField path="seedbuf" type="uint64_t **">
+  Output buffer of matching seeds. May be `NULL` if writing to file only.
+</ParamField>
+<ParamField path="buflen" type="uint64_t *">
+  Output count of seeds in buffer. May be `NULL`.
+</ParamField>
+<ParamField path="path" type="const char *">
+  File path for saving results (also enables temp files for resume). May be `NULL`.
+</ParamField>
+<ParamField path="threads" type="int">
+  Number of threads to use for the search.
+</ParamField>
+<ParamField path="lowBits" type="const uint64_t *">
+  Array of lower-`lowBitN`-bit values to restrict the search. Pass one of the `low20Quad*` arrays. May be `NULL` to search all seeds.
+</ParamField>
+<ParamField path="lowBitN" type="int">
+  Number of bits in the `lowBits` subset values (e.g., `20`).
+</ParamField>
+<ParamField path="check" type="function pointer">
+  Callback returning non-zero for seeds that pass. Receives the 48-bit seed and `data`.
+</ParamField>
+<ParamField path="data" type="void *">
+  User data pointer passed to `check`.
+</ParamField>
+<ParamField path="stop" type="volatile char *">
+  Abort flag checked periodically. Set to non-zero to stop the search. May be `NULL`.
+</ParamField>
+
+## getOptimalAfk
+
+```c
+Pos getOptimalAfk(Pos p[4], int ax, int ay, int az, int *spcnt);
+```
+
+Finds the optimal block coordinate to stand at to maximize spawning spaces within 128 blocks of all four structures.
+
+<ParamField path="p" type="Pos[4]">
+  Block positions of the four structures.
+</ParamField>
+<ParamField path="ax, ay, az" type="int">
+  Dimensions of one structure.
+</ParamField>
+<ParamField path="spcnt" type="int *">
+  Output: number of spawning spaces in range. May be `NULL`.
+</ParamField>
+
+## scanForQuads
+
+```c
+int scanForQuads(
+    const StructureConfig sconf, int radius, uint64_t s48,
+    const uint64_t *lowBits, int lowBitN, uint64_t salt,
+    int x, int z, int w, int h, Pos *qplist, int n
+);
+```
+
+Scans a region-coordinate area for quad-structures in seed `s48`. Returns the number found (up to `n`), writing region coordinates to `qplist`.
+
+## Example: finding quad-witch-huts
+
+```c
+#include "quadbase.h"
+#include <stdio.h>
+
+int check(uint64_t s48, void *data)
+{
+    const StructureConfig sconf = *(const StructureConfig*) data;
+    return isQuadBase(sconf, s48 - sconf.salt, 128);
+}
+
+int main()
+{
+    int styp = Swamp_Hut;
+    int mc = MC_1_18;
+    uint64_t basecnt = 0;
+    uint64_t *bases = NULL;
+    int threads = 8;
+
+    StructureConfig sconf;
+    getStructureConfig(styp, mc, &sconf);
+
+    int err = searchAll48(&bases, &basecnt, NULL, threads,
+        low20QuadIdeal, 20, check, &sconf, NULL);
+
+    if (err || !bases) { printf("Failed.\n"); return 1; }
+
+    Generator g;
+    setupGenerator(&g, mc, 0);
+
+    for (uint64_t i = 0; i < basecnt; i++)
+    {
+        uint64_t s48 = moveStructure(bases[i] - sconf.salt, -1, -1);
+        Pos pos[4];
+        getStructurePos(styp, mc, s48, -1, -1, &pos[0]);
+        getStructurePos(styp, mc, s48, -1,  0, &pos[1]);
+        getStructurePos(styp, mc, s48,  0, -1, &pos[2]);
+        getStructurePos(styp, mc, s48,  0,  0, &pos[3]);
+
+        for (uint64_t high = 0; high < 0x10000; high++)
+        {
+            uint64_t seed = s48 | (high << 48);
+            applySeed(&g, DIM_OVERWORLD, seed);
+            if (isViableStructurePos(styp, &g, pos[0].x, pos[0].z, 0) &&
+                isViableStructurePos(styp, &g, pos[1].x, pos[1].z, 0) &&
+                isViableStructurePos(styp, &g, pos[2].x, pos[2].z, 0) &&
+                isViableStructurePos(styp, &g, pos[3].x, pos[3].z, 0))
+            {
+                printf("%" PRId64 "\n", (int64_t) seed);
+            }
+        }
+    }
+    free(bases);
+    return 0;
+}
+```

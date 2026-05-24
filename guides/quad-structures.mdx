@@ -1,0 +1,184 @@
+---
+title: 'Find quad-structure seeds with the cubiomes library'
+description: 'Search for 48-bit seed bases where four structures cluster within a 128-block AFK sphere, then expand to full 64-bit seeds with biome checks.'
+---
+
+A quad-structure seed places four instances of the same structure type — most commonly Swamp Huts — close enough together that a single AFK position can reach all four spawning platforms simultaneously. Finding these seeds requires understanding a key property of structure generation: position attempts depend only on the **lower 48 bits** of the world seed. This reduces the search space from 2^64 to 2^48, and a further reduction to 2^28 is possible by exploiting patterns in the lower 20 bits. The `quadbase.h` header provides all the tools you need for this search.
+
+## The 48-bit seed base concept
+
+Structure positions are determined by a linear function of the region coordinates and the lower 48 bits of the seed. The top 16 bits are free — they affect biomes but not structure placement. This means you can search 2^48 seeds for the right relative positioning, record those 48-bit bases, then sweep all 2^16 upper bits to find full seeds with viable biomes.
+
+For structures with a 32-chunk region size and 24-chunk range (the configuration used by Swamp Huts), the PRNG arithmetic restricts where good quad-cluster positions can occur within the lower 20 bits. Only a small set of 20-bit values can ever produce the closest constellations. By passing one of the `low20Quad*` arrays to `searchAll48`, you reduce the effective search to around 2^28 seeds — a check that completes in minutes rather than days.
+
+## The low20Quad constants
+
+`quadbase.h` defines four arrays of candidate lower-20-bit values, ordered from most to least selective:
+
+| Constant | Entries | Use case |
+|---|---|---|
+| `low20QuadIdeal` | 3 | Closest possible constellations; best AFK radius |
+| `low20QuadClassic` | 4 | The historically known classic clusters |
+| `low20QuadHutNormal` | 10 | Any valid hut cluster with drop-chute clearance `(7+1, 7+43+1, 9+1)` |
+| `low20QuadHutBarely` | 28 | Any valid hut cluster without drop chute `(7+1, 7+1, 9+1)` |
+
+Pass `low20QuadIdeal` to find only the tightest seeds, or `low20QuadHutBarely` for the complete set of functional quad-hut seeds.
+
+## Checking a seed base with isQuadBase
+
+`isQuadBase` tests whether the four adjacent regions `(0,0)`, `(0,1)`, `(1,0)`, and `(1,1)` produce structure attempts that all fall within a sphere of the given `radius`.
+
+```c
+static inline float isQuadBase(const StructureConfig sconf, uint64_t seed, int radius);
+```
+
+The return value is zero if the seed does not qualify, or the actual enclosing sphere radius (in blocks) if it does. A smaller return value means a tighter cluster and a better AFK position.
+
+<Note>
+Pass `radius = 128` for quad-witch-hut searches. The function dispatches internally to `isQuadBaseFeature24` for the standard Swamp Hut configuration, which is heavily optimised and typically returns in a handful of nanoseconds.
+</Note>
+
+## Searching all 48-bit seeds
+
+`searchAll48` runs a multi-threaded sweep over the 48-bit seed space and calls your `check` function on every candidate. Results land in a dynamically allocated buffer and, optionally, a file on disk.
+
+```c
+int searchAll48(
+        uint64_t **         seedbuf,
+        uint64_t *          buflen,
+        const char *        path,
+        int                 threads,
+        const uint64_t *    lowBits,
+        int                 lowBitN,
+        int (*check)(uint64_t s48, void *data),
+        void *              data,
+        volatile char *     stop
+        );
+```
+
+| Parameter | Description |
+|---|---|
+| `seedbuf` | Pointer to the output buffer; allocated by the function |
+| `buflen` | Written with the number of seeds found |
+| `path` | File path for incremental saves; pass `NULL` for memory-only |
+| `threads` | Number of worker threads |
+| `lowBits` | Array of lower-bit values to restrict the search; pass `NULL` to search all |
+| `lowBitN` | Number of bits covered by each entry in `lowBits` |
+| `check` | Callback returning non-zero for seeds you want to keep |
+| `data` | Opaque pointer forwarded to `check` |
+| `stop` | Pointer to a flag that aborts the search when set non-zero; pass `NULL` to ignore |
+
+## Finding the optimal AFK position
+
+Once you have four structure positions, `getOptimalAfk` finds the integer block coordinate that maximises the number of spawning spaces reachable within the 128-block sphere.
+
+```c
+Pos getOptimalAfk(Pos p[4], int ax, int ay, int az, int *spcnt);
+```
+
+`ax`, `ay`, `az` are the structure dimensions. For Swamp Huts use `7+1`, `7+1`, `9+1` (the hut footprint including the half-block overhang on each side). `spcnt`, if non-null, receives the count of planar spawning spaces inside the sphere.
+
+## Complete example: quad-witch-huts around the origin
+
+```c
+// find seeds with a quad-witch-hut about the origin
+#include "quadbase.h"
+#include <stdio.h>
+
+int check(uint64_t s48, void *data)
+{
+    const StructureConfig sconf = *(const StructureConfig*) data;
+    return isQuadBase(sconf, s48 - sconf.salt, 128);
+}
+
+int main()
+{
+    int styp = Swamp_Hut;
+    int mc = MC_1_18;
+    uint64_t basecnt = 0;
+    uint64_t *bases = NULL;
+    int threads = 8;
+    Generator g;
+
+    StructureConfig sconf;
+    getStructureConfig(styp, mc, &sconf);
+
+    printf("Preparing seed bases...\n");
+    // Get all 48-bit quad-witch-hut bases, but consider only the best 20-bit
+    // constellations where the structures are the closest together.
+    int err = searchAll48(&bases, &basecnt, NULL, threads,
+        low20QuadIdeal, 20, check, &sconf);
+
+    if (err || !bases)
+    {
+        printf("Failed to generate seed bases.\n");
+        exit(1);
+    }
+
+    setupGenerator(&g, mc, 0);
+
+    uint64_t i;
+    for (i = 0; i < basecnt; i++)
+    {
+        // The quad bases by themselves have structures in regions (0,0)-(1,1)
+        // so we can move them by -1 regions to have them around the origin.
+        uint64_t s48 = moveStructure(bases[i] - sconf.salt, -1, -1);
+
+        Pos pos[4];
+        getStructurePos(styp, mc, s48, -1, -1, &pos[0]);
+        getStructurePos(styp, mc, s48, -1,  0, &pos[1]);
+        getStructurePos(styp, mc, s48,  0, -1, &pos[2]);
+        getStructurePos(styp, mc, s48,  0,  0, &pos[3]);
+
+        uint64_t high;
+        for (high = 0; high < 0x10000; high++)
+        {
+            uint64_t seed = s48 | (high << 48);
+            applySeed(&g, DIM_OVERWORLD, seed);
+
+            if (isViableStructurePos(styp, &g, pos[0].x, pos[0].z, 0) &&
+                isViableStructurePos(styp, &g, pos[1].x, pos[1].z, 0) &&
+                isViableStructurePos(styp, &g, pos[2].x, pos[2].z, 0) &&
+                isViableStructurePos(styp, &g, pos[3].x, pos[3].z, 0))
+            {
+                printf("%" PRId64 "\n", (int64_t) seed);
+            }
+        }
+    }
+
+    free(bases);
+    return 0;
+}
+```
+
+<Steps>
+  <Step title="Load the structure config">
+    Call `getStructureConfig(Swamp_Hut, mc, &sconf)` to get the version-specific salt, region size, and chunk range. The salt is subtracted from seed bases before calling `isQuadBase` because the raw base encodes position information relative to salt zero.
+  </Step>
+  <Step title="Run searchAll48">
+    Pass `low20QuadIdeal` with `lowBitN = 20` to restrict the sweep to the three 20-bit values that produce the tightest constellations. `check` subtracts `sconf.salt` before testing, which normalises the seed to the standard quad-base form.
+  </Step>
+  <Step title="Relocate structures to the origin">
+    Raw quad-bases place structures in regions `(0,0)`–`(1,1)`. Calling `moveStructure(bases[i] - sconf.salt, -1, -1)` shifts them by one region in both axes so they straddle the world origin — roughly centred on coordinates `(0, 0)`.
+  </Step>
+  <Step title="Sweep upper 16 bits">
+    Call `isViableStructurePos` for all four positions under all 65536 upper-bit values. Seeds that pass all four biome checks are valid quad-witch-hut worlds.
+  </Step>
+</Steps>
+
+## Salt subtraction and structure type sharing
+
+Every structure type has a unique salt baked into its `StructureConfig`. Because position generation adds the salt to the seed before running the PRNG, two structure types with the same region and chunk-range configuration share the same underlying set of quad-bases — their bases differ only by the difference in their salts. You can convert a Swamp Hut base to a Pillager Outpost base (for example) by adding the difference in salts.
+
+<Tip>
+Pass a non-null `path` to `searchAll48` so that it writes results incrementally to disk. If the search is interrupted you can resume from the saved file with `loadSavedSeeds` instead of starting over.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Find structure positions" icon="map-pin" href="/guides/structure-finding">
+    Understand `getStructurePos` and `isViableStructurePos` before building a quad-structure search.
+  </Card>
+  <Card title="Locate spawn and strongholds" icon="compass" href="/guides/strongholds-and-spawn">
+    Once you have a quad-hut seed, find the spawn point and nearest stronghold.
+  </Card>
+</CardGroup>

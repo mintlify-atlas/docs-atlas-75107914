@@ -1,0 +1,173 @@
+---
+title: 'Query the biome at a block position'
+description: 'Learn how to use getBiomeAt to look up the biome ID at any block or biome coordinate in any dimension, then iterate seeds to find a target biome.'
+---
+
+The most fundamental operation in cubiomes is asking "what biome is at this coordinate?" You set up a generator once for the target Minecraft version, apply a world seed and dimension, then call `getBiomeAt` to get a numeric biome ID. The full setup-apply-query cycle costs nanoseconds per call at `scale=4` and a little more at `scale=1`, making tight seed-search loops practical.
+
+## Setting up the generator
+
+Before querying any biome you must call `setupGenerator` to allocate and configure the internal state for a specific Minecraft version. You then call `applySeed` before every seed change — this is cheap and does not reallocate memory.
+
+```c
+#include "generator.h"
+
+Generator g;
+setupGenerator(&g, MC_1_18, 0);   // version, flags
+applySeed(&g, DIM_OVERWORLD, seed);
+```
+
+`setupGenerator` takes three arguments:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `g` | `Generator *` | Pointer to an uninitialised `Generator` struct you own |
+| `mc` | `int` | Minecraft version constant (e.g. `MC_1_18`, `MC_1_21`) |
+| `flags` | `uint32_t` | Optional flags: `0`, `LARGE_BIOMES`, `NO_BETA_OCEAN`, `FORCE_OCEAN_VARIANTS` |
+
+`applySeed` takes:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `g` | `Generator *` | Previously initialised generator |
+| `dim` | `int` | Dimension: `DIM_OVERWORLD` (0), `DIM_NETHER` (-1), `DIM_END` (+1) |
+| `seed` | `uint64_t` | 64-bit world seed |
+
+## Querying a single position
+
+`getBiomeAt` returns the integer biome ID at a scaled position, or `-1` on failure.
+
+```c
+int scale = 1; // scale=1: block coordinates, scale=4: biome coordinates
+int x = 0, y = 63, z = 0;
+int biomeID = getBiomeAt(&g, scale, x, y, z);
+```
+
+| Parameter | Meaning |
+|-----------|---------|
+| `scale=1` | Block coordinates — one sample per block |
+| `scale=4` | Biome coordinates — one sample per 4 blocks (the native resolution of biome data) |
+
+<Note>
+For Minecraft 1.18 and later, biome generation is fully three-dimensional. The `y` coordinate matters: underground biomes like `lush_caves` (175) and `deep_dark` (183) occupy specific vertical ranges. For a surface check, use `y=63` (roughly sea level) with `scale=1` or `y=15` with `scale=4`.
+
+For versions up to 1.17 the generator uses a 2D layer stack and the `y` value is ignored.
+</Note>
+
+## Complete example: finding a mushroom fields seed
+
+The following program is taken directly from the cubiomes README. It iterates seeds starting from 0 until it finds one where block position (0, 63, 0) is `mushroom_fields`.
+
+```c
+// check the biome at a block position
+#include "generator.h"
+#include <stdio.h>
+
+int main()
+{
+    // Set up a biome generator that reflects the biome generation of
+    // Minecraft 1.18.
+    Generator g;
+    setupGenerator(&g, MC_1_18, 0);
+
+    // Seeds are internally represented as unsigned 64-bit integers.
+    uint64_t seed;
+    for (seed = 0; ; seed++)
+    {
+        // Apply the seed to the generator for the Overworld dimension.
+        applySeed(&g, DIM_OVERWORLD, seed);
+
+        // To get the biome at a single block position, we can use getBiomeAt().
+        int scale = 1; // scale=1: block coordinates, scale=4: biome coordinates
+        int x = 0, y = 63, z = 0;
+        int biomeID = getBiomeAt(&g, scale, x, y, z);
+        if (biomeID == mushroom_fields)
+        {
+            printf("Seed %" PRId64 " has a Mushroom Fields biome at "
+                "block position (%d, %d).\n", (int64_t) seed, x, z);
+            break;
+        }
+    }
+
+    return 0;
+}
+```
+
+Running this outputs:
+
+```
+Seed 262 has a Mushroom Fields biome at block position (0, 0).
+```
+
+## Workflow overview
+
+<Steps>
+  <Step title="Include generator.h">
+    `#include "generator.h"` pulls in the `Generator` struct, `setupGenerator`, `applySeed`, `getBiomeAt`, and all biome ID constants from `biomes.h`.
+  </Step>
+  <Step title="Initialise the generator">
+    Call `setupGenerator(&g, MC_VERSION, flags)` once per program run. The `flags` parameter is `0` for standard worlds; pass `LARGE_BIOMES` to match a Large Biomes world type.
+  </Step>
+  <Step title="Apply each seed">
+    Call `applySeed(&g, DIM_OVERWORLD, seed)` for every seed you want to test. This is fast — it seeds internal PRNGs without re-allocating.
+  </Step>
+  <Step title="Query the biome">
+    Call `getBiomeAt(&g, scale, x, y, z)` and compare the result against a `BiomeID` constant.
+  </Step>
+  <Step title="Compile with -fwrapv">
+    Link with `libcubiomes.a` or `-lcubiomes` and always pass `-fwrapv` to enforce two's-complement signed overflow, which mirrors Java's arithmetic.
+    ```bash
+    gcc find_biome_at.c libcubiomes.a -fwrapv -lm
+    ```
+  </Step>
+</Steps>
+
+## Common biome IDs
+
+The full list is in `biomes.h`. Below are the most frequently targeted biomes.
+
+| Constant | ID | Notes |
+|----------|----|-------|
+| `ocean` | 0 | Default ocean |
+| `plains` | 1 | |
+| `desert` | 2 | |
+| `forest` | 4 | |
+| `taiga` | 5 | |
+| `swamp` | 6 | Required for Swamp Huts |
+| `mushroom_fields` | 14 | Rarest overworld biome |
+| `jungle` | 21 | Required for Jungle Temples |
+| `dark_forest` | 29 | Required for Woodland Mansions |
+| `snowy_taiga` | 30 | |
+| `giant_tree_taiga` | 32 | |
+| `savanna` | 35 | |
+| `badlands` | 37 | |
+| `warm_ocean` | 44 | 1.13+ |
+| `deep_ocean` | 24 | Required for Ocean Monuments |
+| `lush_caves` | 175 | Underground, 1.17+ |
+| `deep_dark` | 183 | Underground, 1.19+ |
+| `mangrove_swamp` | 184 | 1.19+ |
+| `cherry_grove` | 185 | 1.20+ |
+| `pale_garden` | 186 | 1.21 Winter Drop |
+
+<Tip>
+Use `biome2str(mc, biomeID)` from `util.h` to get the resource-ID name of any biome at runtime (e.g. `"minecraft:mushroom_fields"`). This is useful for debug output when scanning many seeds.
+</Tip>
+
+<Accordion title="Version constants">
+The `MCVersion` enum in `biomes.h` defines one constant per supported release. Use the short alias (e.g. `MC_1_18`) which maps to the latest patch of that major release.
+
+```c
+MC_1_7, MC_1_8, MC_1_9, MC_1_10, MC_1_11, MC_1_12,
+MC_1_13, MC_1_14, MC_1_15, MC_1_16, MC_1_17,
+MC_1_18, MC_1_19, MC_1_20, MC_1_21
+```
+</Accordion>
+
+<CardGroup cols={2}>
+  <Card title="Generate biomes for an area" icon="map" href="/guides/biome-area-generation">
+    Use `genBiomes` with a `Range` to generate an entire region at once — much faster than calling `getBiomeAt` per cell.
+  </Card>
+  <Card title="Filter seeds by biome requirements" icon="filter" href="/guides/seed-filtering">
+    Use `checkForBiomes` and `BiomeFilter` to reject seeds that cannot contain a required set of biomes.
+  </Card>
+</CardGroup>

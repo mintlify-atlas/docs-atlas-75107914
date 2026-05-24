@@ -1,0 +1,176 @@
+---
+title: 'Find structure positions with the cubiomes library'
+description: 'Learn the two-stage process of locating structures: call getStructurePos for a position attempt, then confirm viability with isViableStructurePos.'
+---
+
+Structure generation in cubiomes mirrors how Minecraft itself works: first the game picks a candidate block position for a structure somewhere in a grid region, then it checks whether the surrounding biomes actually permit that structure to spawn. You replicate this two-stage process with `getStructurePos` followed by `isViableStructurePos`. The first call costs nanoseconds and depends only on the lower 48 bits of the seed, making it practical to scan billions of seeds before ever touching the more expensive biome generator.
+
+## How region-based generation works
+
+Minecraft divides the world into a grid of regions — usually 32×32 chunks — and makes one generation attempt somewhere inside each region. The attempt position is determined by the structure type, the region coordinates `(regX, regZ)`, and the **lower 48 bits** of the world seed. The top 16 bits of the seed have no effect on structure positions.
+
+Because the dependency on region coordinates is linear, you can translate any structure to a different part of the world by transforming the 48-bit seed with `moveStructure`.
+
+## Structure types
+
+Include `finders.h` to access the `StructureType` enum.
+
+| Constant | Notes |
+|---|---|
+| `Feature` | Pre-1.13 temple generation attempts |
+| `Desert_Pyramid` | |
+| `Jungle_Temple` | Also aliased as `Jungle_Pyramid` |
+| `Swamp_Hut` | Required biome: swamp |
+| `Igloo` | |
+| `Village` | |
+| `Ocean_Ruin` | |
+| `Shipwreck` | |
+| `Monument` | Ocean Monument; large structure distribution |
+| `Mansion` | Woodland Mansion; large structure distribution |
+| `Outpost` | Pillager Outpost |
+| `Ruined_Portal` | |
+| `Ruined_Portal_N` | Nether-side Ruined Portal |
+| `Ancient_City` | 1.19+ |
+| `Treasure` | Buried Treasure |
+| `Mineshaft` | Use `getMineshafts()` instead of `getStructurePos()` |
+| `Desert_Well` | |
+| `Geode` | |
+| `Fortress` | Nether Fortress |
+| `Bastion` | Bastion Remnant |
+| `End_City` | |
+| `End_Gateway` | |
+| `End_Island` | |
+| `Trail_Ruins` | 1.20+ |
+| `Trial_Chambers` | 1.21+ |
+
+## Finding a structure position
+
+`getStructurePos` returns the block position of the generation attempt in a given region, or zero if no valid attempt exists for that region and seed.
+
+```c
+int getStructurePos(int structureType, int mc, uint64_t seed, int regX, int regZ, Pos *pos);
+```
+
+| Parameter | Description |
+|---|---|
+| `structureType` | One of the `StructureType` enum values |
+| `mc` | Minecraft version constant (e.g. `MC_1_18`) |
+| `seed` | World seed — only the lower 48 bits are used |
+| `regX`, `regZ` | Region coordinates, not chunk or block coordinates |
+| `pos` | Output `Pos` struct written on success |
+
+## Confirming biome viability
+
+`isViableStructurePos` performs a biome check near the candidate block position to determine whether the structure would actually generate there.
+
+```c
+int isViableStructurePos(int structType, Generator *g, int blockX, int blockZ, uint32_t flags);
+```
+
+The generator must already have a seed applied via `applySeed`. The function temporarily modifies the generator state but restores it before returning. Pass `flags = 0` for most structure types; for villages you can use the flags to specify a biome variant.
+
+<Warning>
+`isViableStructurePos` is orders of magnitude slower than `getStructurePos` — expect microseconds rather than nanoseconds per call. Always call `getStructurePos` first to reject impossible positions before invoking the biome check.
+</Warning>
+
+## Complete example: Pillager Outpost at the origin
+
+The following program searches for a seed where a Pillager Outpost generates within the origin chunk (blocks 0–15 in both axes).
+
+```c
+// find a seed with a certain structure at the origin chunk
+#include "finders.h"
+#include <stdio.h>
+
+int main()
+{
+    int structType = Outpost;
+    int mc = MC_1_18;
+
+    Generator g;
+    setupGenerator(&g, mc, 0);
+
+    uint64_t lower48;
+    for (lower48 = 0; ; lower48++)
+    {
+        // The structure position depends only on the region coordinates and
+        // the lower 48-bits of the world seed.
+        Pos p;
+        if (!getStructurePos(structType, mc, lower48, 0, 0, &p))
+            continue;
+
+        // Look for a seed with the structure at the origin chunk.
+        if (p.x >= 16 || p.z >= 16)
+            continue;
+
+        // Look for a full 64-bit seed with viable biomes.
+        uint64_t upper16;
+        for (upper16 = 0; upper16 < 0x10000; upper16++)
+        {
+            uint64_t seed = lower48 | (upper16 << 48);
+            applySeed(&g, DIM_OVERWORLD, seed);
+            if (isViableStructurePos(structType, &g, p.x, p.z, 0))
+            {
+                printf("Seed %" PRId64 " has a Pillager Outpost at (%d, %d).\n",
+                    (int64_t) seed, p.x, p.z);
+                return 0;
+            }
+        }
+    }
+}
+```
+
+<Steps>
+  <Step title="Scan lower 48-bit seeds">
+    The outer loop iterates `lower48` from 0 upward. For each value, `getStructurePos` checks whether the structure has a generation attempt at all in region `(0, 0)`. This is fast enough to iterate millions of values per second.
+  </Step>
+  <Step title="Filter by position">
+    The example then discards attempts that fall outside the origin chunk (`p.x >= 16 || p.z >= 16`). Adjust this predicate for your target location.
+  </Step>
+  <Step title="Test all 65536 upper bits">
+    The inner loop sweeps the top 16 bits (which do not affect structure positions) and calls `isViableStructurePos` for each full 64-bit seed. The first passing seed is printed and the program exits.
+  </Step>
+</Steps>
+
+## Relocating structures with moveStructure
+
+Because the position formula has a linear dependency on region coordinates, you can shift a 48-bit seed so that its structures move by a region offset `(dregX, dregZ)`:
+
+```c
+static inline uint64_t moveStructure(uint64_t baseSeed, int regX, int regZ)
+{
+    return (baseSeed - regX*341873128712 - regZ*132897987541) & 0xffffffffffff;
+}
+```
+
+This is the foundation of the quad-structure search technique: find a seed base with the right relative structure positions around the origin, then call `moveStructure` to translate the whole cluster anywhere in the world.
+
+<Note>
+`moveStructure` operates on 48-bit seeds and returns a 48-bit result. Combine the result with your chosen upper 16 bits before using it as a full world seed.
+</Note>
+
+## Getting the structure configuration
+
+Use `getStructureConfig` to retrieve the version-specific `StructureConfig` for a given type. The config holds the structure's salt, region size, chunk range, dimension, and rarity.
+
+```c
+StructureConfig sconf;
+getStructureConfig(Swamp_Hut, MC_1_18, &sconf);
+```
+
+The salt is particularly important for quad-structure work: seed bases for different structure types share the same underlying positions and differ only by their salt values.
+
+## False positives in 1.18+
+
+<Warning>
+Desert Pyramids, Jungle Temples, and Woodland Mansions in 1.18 and later require not only correct biomes but also a sufficiently high surface height at their bounding-box corners. cubiomes does not model block-level terrain, so `isViableStructurePos` can return a positive result for positions where the structure would actually fail to generate in-game. Use `isViableStructureTerrain` as a secondary heuristic to filter some of these false positives at scale 1:4 biome resolution.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="Find quad-structure seeds" icon="grid-2x2" href="/guides/quad-structures">
+    Use `searchAll48` and `isQuadBase` to locate seeds where four structures cluster within a single 128-block AFK sphere.
+  </Card>
+  <Card title="Filter seeds by biome requirements" icon="filter" href="/guides/seed-filtering">
+    Combine structure searches with `checkForBiomes` to require specific biomes in the same world.
+  </Card>
+</CardGroup>

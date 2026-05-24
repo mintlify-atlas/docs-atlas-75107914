@@ -1,0 +1,162 @@
+---
+title: "Utility functions API reference"
+description: "Utility functions in cubiomes for loading seed files, converting biome and version names, generating colormap images, and saving PPM files."
+---
+
+`util.h` provides helper functions for common tasks around cubiomes: loading saved seed lists from disk, converting between version/biome enums and human-readable names, building biome color maps, and rendering biome data to image buffers.
+
+## Seed file I/O
+
+### loadSavedSeeds
+
+```c
+uint64_t *loadSavedSeeds(const char *fnam, uint64_t *scnt);
+```
+
+Loads a newline-separated list of decimal seed values from a file. Returns a dynamically allocated buffer; the caller must `free()` it. Sets `*scnt` to the number of seeds loaded.
+
+<ParamField path="fnam" type="const char *">
+  Path to the seed file.
+</ParamField>
+<ParamField path="scnt" type="uint64_t *">
+  Output: number of seeds loaded.
+</ParamField>
+
+## Version and biome name conversion
+
+### mc2str / str2mc
+
+```c
+const char *mc2str(int mc);
+int         str2mc(const char *s);
+```
+
+Convert between an `MCVersion` enum value and its string representation (e.g., `MC_1_18` ↔ `"1.18"`). `str2mc` returns `MC_UNDEF` if the string is not recognized.
+
+### biome2str
+
+```c
+const char *biome2str(int mc, int id);
+```
+
+Returns the resource ID name for a biome in the given version (e.g., `"minecraft:mushroom_fields"`). Supports Minecraft 1.13 and later.
+
+### struct2str
+
+```c
+const char *struct2str(int stype);
+```
+
+Returns a human-readable name for a `StructureType` enum value (e.g., `"Swamp_Hut"`).
+
+## Biome color maps
+
+### initBiomeColors
+
+```c
+void initBiomeColors(unsigned char biomeColors[256][3]);
+```
+
+Fills a 256-entry RGB color table with default colors for each biome ID. Use this to initialize before calling `biomesToImage`.
+
+### initBiomeTypeColors
+
+```c
+void initBiomeTypeColors(unsigned char biomeColors[256][3]);
+```
+
+Like `initBiomeColors`, but assigns colors based on biome temperature category rather than individual biome identity.
+
+### parseBiomeColors
+
+```c
+int parseBiomeColors(unsigned char biomeColors[256][3], const char *buf);
+```
+
+Parses biome-to-color mappings from a text buffer. Accepts biome IDs or names paired with a color as a single number or RGB triplet in decimal or hex (`0x…` or `#…`). Returns the number of successfully parsed entries.
+
+## Image rendering
+
+### biomesToImage
+
+```c
+int biomesToImage(
+    unsigned char *pixels,
+    unsigned char  biomeColors[256][3],
+    const int     *biomes,
+    unsigned int   sx,
+    unsigned int   sy,
+    unsigned int   pixscale,
+    int            flip
+);
+```
+
+Maps a flat biome ID array to an RGB pixel buffer. Each biome cell is rendered as a `pixscale × pixscale` block of pixels. Set `flip = 2` for a standard top-down orientation.
+
+<ParamField path="pixels" type="unsigned char *">
+  Output RGB buffer. Must be at least `3 * sx * pixscale * sy * pixscale` bytes.
+</ParamField>
+<ParamField path="biomeColors" type="unsigned char [256][3]">
+  Color table, initialized with `initBiomeColors`.
+</ParamField>
+<ParamField path="biomes" type="const int *">
+  Flat biome ID array of size `sx * sy`, as returned by `genBiomes`.
+</ParamField>
+<ParamField path="sx, sy" type="unsigned int">
+  Width and height of the biome grid (in biome cells, not pixels).
+</ParamField>
+<ParamField path="pixscale" type="unsigned int">
+  Pixels per biome cell. Use `4` for a standard zoom.
+</ParamField>
+<ParamField path="flip" type="int">
+  Orientation flag. `2` = top-down (standard).
+</ParamField>
+
+### savePPM
+
+```c
+int savePPM(const char *path, const unsigned char *pixels,
+            unsigned int sx, unsigned int sy);
+```
+
+Saves an RGB pixel buffer to a PPM image file. Returns `0` on success, `-1` if the file cannot be opened, or `1` if not all data could be written.
+
+## Example: render a biome map to an image
+
+```c
+#include "generator.h"
+#include "util.h"
+
+int main()
+{
+    Generator g;
+    setupGenerator(&g, MC_1_18, LARGE_BIOMES);
+
+    uint64_t seed = 123LL;
+    applySeed(&g, DIM_OVERWORLD, seed);
+
+    Range r;
+    r.scale = 16;
+    r.x = -60; r.z = -60;
+    r.sx = 120; r.sz = 120;
+    r.y = 15;  r.sy = 1;
+
+    int *biomeIds = allocCache(&g, r);
+    genBiomes(&g, biomeIds, r);
+
+    int pix4cell = 4;
+    int imgWidth  = pix4cell * r.sx;
+    int imgHeight = pix4cell * r.sz;
+
+    unsigned char biomeColors[256][3];
+    initBiomeColors(biomeColors);
+
+    unsigned char *rgb = malloc(3 * imgWidth * imgHeight);
+    biomesToImage(rgb, biomeColors, biomeIds, r.sx, r.sz, pix4cell, 2);
+    savePPM("map.ppm", rgb, imgWidth, imgHeight);
+
+    free(biomeIds);
+    free(rgb);
+    return 0;
+}
+```
